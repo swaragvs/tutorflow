@@ -1,0 +1,23 @@
+# Optional: run a local Postgres for development instead of hitting
+# Supabase/Neon on every request. Not required for deployment.
+#
+# Usage: docker compose up -d
+# Then set DATABASE_URL=postgresql://tutorflow:tutorflow@localhost:5432/tutorflow
+# in backend/.env
+
+version: "3.9"
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tutorflow
+      POSTGRES_PASSWORD: tutorflow
+      POSTGRES_DB: tutorflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - tutorflow_pgdata:/var/lib/postgresql/data
+
+volumes:
+  tutorflow_pgdata:
