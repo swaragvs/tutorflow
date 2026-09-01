@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.db.session import get_db
-from app.api import auth
+from app.api import auth, students, sessions
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -51,12 +51,8 @@ async def health_check(db=Depends(get_db)):
 
 # Include routers
 app.include_router(auth.router)
-
-
-# Future route includes will go here
-# from app.api import sessions, students
-# app.include_router(sessions.router, prefix="/sessions", tags=["sessions"])
-# app.include_router(students.router, prefix="/students", tags=["students"])
+app.include_router(students.router)
+app.include_router(sessions.router)
 
 
 if __name__ == "__main__":
