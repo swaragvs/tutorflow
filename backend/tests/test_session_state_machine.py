@@ -1,6 +1,8 @@
 """Tests for session state machine (Phase 4)."""
 
 from datetime import datetime, timedelta
+import json
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -110,7 +112,7 @@ class TestSessionStateTransitions:
         assert data["homework"] == "Complete chapter 5 exercises"
 
     def test_transition_completed_to_ai_reviewed(self, client, db):
-        """Test COMPLETED → AI_REVIEWED transition (skeleton for Phase 5)."""
+        """Test COMPLETED → AI_REVIEWED transition (Phase 5 with mocked Gemini)."""
         tutor = User(
             email="tutor@example.com",
             password_hash=hash_password("TutorPass123"),
@@ -146,15 +148,28 @@ class TestSessionStateTransitions:
             data={"sub": str(tutor.id), "role": tutor.role.value}
         )
 
-        # Trigger AI review
-        response = client.patch(
-            f"/sessions/{session.id}/trigger-ai-review",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+        # Mock Gemini client
+        with patch("app.services.ai.genai.Client") as mock_client_class:
+            mock_client = MagicMock()
+            mock_client_class.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.text = json.dumps({
+                "summary": "Great session",
+                "strengths": [],
+                "areas_to_improve": [],
+                "recommended_next_topic": "Next topic",
+            })
+            mock_client.models.generate_content.return_value = mock_response
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "AI_REVIEWED"
+            # Trigger AI review
+            response = client.patch(
+                f"/sessions/{session.id}/trigger-ai-review",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "AI_REVIEWED"
 
 
 class TestIllegalTransitions:
@@ -250,7 +265,8 @@ class TestIllegalTransitions:
         )
 
         assert response.status_code == 409
-        assert "Cannot transition" in response.json()["detail"]
+        # Should reject because status must be COMPLETED
+        assert "COMPLETED" in response.json()["detail"]
 
     def test_completed_to_scheduled_rejected(self, client, db):
         """Test illegal transition COMPLETED → SCHEDULED is rejected."""
