@@ -35,3 +35,5 @@ Thumbs.db
 npm-debug.log*
 # --- project documentation ---
 Project Goals.md
+# --- generated reports ---
+report.md
