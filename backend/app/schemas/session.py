@@ -46,3 +46,19 @@ class SessionConflictResponse(BaseModel):
     """Response when session creation conflicts with existing session."""
     detail: str
     conflicting_session: Optional[dict] = None
+
+
+class SessionStartRequest(BaseModel):
+    """Request schema for starting a session."""
+    pass  # No body required
+
+
+class SessionCompleteRequest(BaseModel):
+    """Request schema for completing a session."""
+    notes: str = Field(..., min_length=1, description="Session notes (required, non-empty)")
+    homework: str = Field(..., min_length=1, description="Homework assigned (required, non-empty)")
+
+
+class SessionNotesRequest(BaseModel):
+    """Request schema for updating session notes."""
+    notes: str = Field(..., min_length=1, description="Session notes (required, non-empty)")
