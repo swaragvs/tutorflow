@@ -1,5 +1,6 @@
 """Sessions API endpoints with overlap prevention."""
 
+import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -7,19 +8,27 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.deps import get_current_user, CurrentUser
-from app.models import Session as SessionModel, StudentProfile, RoleEnum
+from app.models import Session as SessionModel, StudentProfile, RoleEnum, SessionStatusEnum, User
 from app.schemas.session import (
     SessionCreateRequest,
     SessionResponse,
     SessionStartRequest,
     SessionCompleteRequest,
     SessionNotesRequest,
+    SessionAIPlanRequest,
 )
 from app.services.session_state import (
     transition_session,
     assert_session_not_locked,
     InvalidTransitionError,
     SessionLockedError,
+)
+from app.services.ai import (
+    generate_session_plan,
+    generate_session_summary,
+    AIServiceError,
+    AIServiceRateLimitError,
+    AIServiceTimeoutError,
 )
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -410,7 +419,8 @@ async def trigger_ai_review(
     """
     Trigger AI review of a completed session (COMPLETED → AI_REVIEWED).
     
-    Placeholder for Phase 5 AI integration. Currently just transitions status.
+    Calls the AI service to generate a structured summary from session notes,
+    stores the result in ai_summary, and transitions the session to AI_REVIEWED.
     
     Args:
         session_id: ID of the session
@@ -418,12 +428,13 @@ async def trigger_ai_review(
         db: Database session
         
     Returns:
-        Updated Session
+        Updated Session with ai_summary populated and status AI_REVIEWED
         
     Raises:
         HTTPException 403: If not tutor
         HTTPException 404: If session not found or not owned
         HTTPException 409: If session is not COMPLETED
+        HTTPException 502: If AI service fails
     """
     # Check if current user is a tutor
     if current_user.role != RoleEnum.TUTOR:
@@ -441,6 +452,42 @@ async def trigger_ai_review(
             detail="Session not found",
         )
     
+    # Check session status is COMPLETED
+    if session.status != SessionStatusEnum.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot trigger AI review for session in {session.status.value} state. Session must be COMPLETED.",
+        )
+    
+    # Get student profile
+    student_profile = (
+        db.query(StudentProfile)
+        .filter(StudentProfile.user_id == session.student_id)
+        .first()
+    )
+    
+    if not student_profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Student profile not found",
+        )
+    
+    # Call AI service to generate summary
+    try:
+        summary_result = generate_session_summary(student_profile, session)
+        # Store as JSON string
+        session.ai_summary = json.dumps(summary_result)
+    except (AIServiceRateLimitError, AIServiceTimeoutError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AI service temporarily unavailable: {str(e)}",
+        )
+    except AIServiceError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AI service error: {str(e)}",
+        )
+    
     # Attempt transition
     try:
         transition_session(session, "trigger_ai_review")
@@ -450,7 +497,108 @@ async def trigger_ai_review(
             detail=f"Cannot transition from {e.current_status} to AI_REVIEWED via trigger_ai_review",
         )
     
-    # TODO: Phase 5 - Call AI service to generate summary and store in session.ai_summary
+    db.commit()
+    db.refresh(session)
+    
+    return session
+
+
+@router.post("/{session_id}/ai-plan", response_model=SessionResponse)
+async def generate_ai_plan(
+    session_id: UUID,
+    request: SessionAIPlanRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Generate an AI plan for a session (tutor-only, SCHEDULED only).
+    
+    Fetches the student's profile and prior session (if any), sends to Gemini,
+    stores the result in ai_plan, and returns the session.
+    
+    Args:
+        session_id: ID of the session
+        request: GenerateAIPlanRequest with optional duration_minutes
+        current_user: Current authenticated user (must be TUTOR)
+        db: Database session
+        
+    Returns:
+        Updated Session with ai_plan populated
+        
+    Raises:
+        HTTPException 403: If not tutor
+        HTTPException 404: If session not found or not owned
+        HTTPException 409: If session is not SCHEDULED
+        HTTPException 502: If AI service fails
+    """
+    # Check if current user is a tutor
+    if current_user.role != RoleEnum.TUTOR:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only tutors can generate AI plans",
+        )
+    
+    # Get session
+    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    
+    if not session or session.tutor_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+    
+    # Check session status is SCHEDULED
+    if session.status != SessionStatusEnum.SCHEDULED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot generate AI plan for session in {session.status.value} state. Session must be SCHEDULED.",
+        )
+    
+    # Get student profile
+    student_profile = (
+        db.query(StudentProfile)
+        .filter(StudentProfile.user_id == session.student_id)
+        .first()
+    )
+    
+    if not student_profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Student profile not found",
+        )
+    
+    # Get most recent COMPLETED-or-later session for this student
+    previous_session = (
+        db.query(SessionModel)
+        .filter(
+            SessionModel.student_id == session.student_id,
+            SessionModel.id != session.id,
+            SessionModel.status.in_([SessionStatusEnum.COMPLETED, SessionStatusEnum.AI_REVIEWED]),
+        )
+        .order_by(SessionModel.end_time.desc())
+        .first()
+    )
+    
+    # Calculate duration if not provided
+    duration_minutes = request.duration_minutes
+    if not duration_minutes and session.start_time and session.end_time:
+        duration_minutes = int((session.end_time - session.start_time).total_seconds() / 60)
+    
+    # Call AI service to generate plan
+    try:
+        plan_result = generate_session_plan(student_profile, previous_session, duration_minutes)
+        # Store as JSON string
+        session.ai_plan = json.dumps(plan_result)
+    except (AIServiceRateLimitError, AIServiceTimeoutError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AI service temporarily unavailable: {str(e)}",
+        )
+    except AIServiceError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AI service error: {str(e)}",
+        )
     
     db.commit()
     db.refresh(session)

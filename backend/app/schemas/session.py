@@ -62,3 +62,8 @@ class SessionCompleteRequest(BaseModel):
 class SessionNotesRequest(BaseModel):
     """Request schema for updating session notes."""
     notes: str = Field(..., min_length=1, description="Session notes (required, non-empty)")
+
+
+class SessionAIPlanRequest(BaseModel):
+    """Request schema for generating AI plan."""
+    duration_minutes: Optional[int] = Field(None, description="Duration of the session in minutes")
