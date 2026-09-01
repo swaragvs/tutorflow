@@ -15,11 +15,16 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Configure CORS
-cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",")]
+# Configure CORS for local Vite and localhost development
+cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()]
+for origin in ("http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"):
+    if origin not in cors_origins:
+        cors_origins.append(origin)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
