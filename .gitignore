@@ -1,0 +1,37 @@
+# --- environment ---
+.env
+.env.local
+*.env
+!.env.example
+
+# --- python / backend ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+*.sqlite3
+
+# --- alembic ---
+backend/alembic/*.pyc
+
+# --- node / frontend ---
+node_modules/
+dist/
+build/
+.vite/
+*.local
+
+# --- editor / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- logs ---
+*.log
+npm-debug.log*
+# --- project documentation ---
+Project Goals.md
