@@ -8,7 +8,19 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.deps import get_current_user, CurrentUser
 from app.models import Session as SessionModel, StudentProfile, RoleEnum
-from app.schemas.session import SessionCreateRequest, SessionResponse
+from app.schemas.session import (
+    SessionCreateRequest,
+    SessionResponse,
+    SessionStartRequest,
+    SessionCompleteRequest,
+    SessionNotesRequest,
+)
+from app.services.session_state import (
+    transition_session,
+    assert_session_not_locked,
+    InvalidTransitionError,
+    SessionLockedError,
+)
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -199,5 +211,248 @@ async def get_session(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Session not found",
             )
+    
+    return session
+
+
+@router.patch("/{session_id}/start", response_model=SessionResponse)
+async def start_session(
+    session_id: UUID,
+    request: SessionStartRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Start a session (transition SCHEDULED → IN_PROGRESS).
+    
+    Only tutor who owns the session can start it.
+    
+    Args:
+        session_id: ID of the session
+        request: StartRequest (no body)
+        current_user: Current authenticated user (must be TUTOR)
+        db: Database session
+        
+    Returns:
+        Updated Session
+        
+    Raises:
+        HTTPException 403: If not tutor
+        HTTPException 404: If session not found or not owned
+        HTTPException 409: If transition is illegal
+    """
+    # Check if current user is a tutor
+    if current_user.role != RoleEnum.TUTOR:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only tutors can start sessions",
+        )
+    
+    # Get session
+    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    
+    if not session or session.tutor_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+    
+    # Attempt transition
+    try:
+        transition_session(session, "start")
+    except InvalidTransitionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot transition from {e.current_status} to IN_PROGRESS via start",
+        )
+    
+    db.commit()
+    db.refresh(session)
+    
+    return session
+
+
+@router.patch("/{session_id}/complete", response_model=SessionResponse)
+async def complete_session(
+    session_id: UUID,
+    request: SessionCompleteRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Complete a session (transition IN_PROGRESS → COMPLETED).
+    
+    Requires both notes and homework to be non-empty.
+    Only tutor who owns the session can complete it.
+    
+    Args:
+        session_id: ID of the session
+        request: CompleteRequest with notes and homework
+        current_user: Current authenticated user (must be TUTOR)
+        db: Database session
+        
+    Returns:
+        Updated Session
+        
+    Raises:
+        HTTPException 403: If not tutor
+        HTTPException 404: If session not found or not owned
+        HTTPException 409: If transition is illegal
+    """
+    # Check if current user is a tutor
+    if current_user.role != RoleEnum.TUTOR:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only tutors can complete sessions",
+        )
+    
+    # Get session
+    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    
+    if not session or session.tutor_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+    
+    # Set notes and homework
+    session.notes = request.notes
+    session.homework = request.homework
+    
+    # Attempt transition
+    try:
+        transition_session(session, "complete")
+    except InvalidTransitionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot transition from {e.current_status} to COMPLETED via complete",
+        )
+    
+    db.commit()
+    db.refresh(session)
+    
+    return session
+
+
+@router.patch("/{session_id}/notes", response_model=SessionResponse)
+async def update_session_notes(
+    session_id: UUID,
+    request: SessionNotesRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Update session notes (only allowed while IN_PROGRESS).
+    
+    Only tutor who owns the session can update notes.
+    
+    Args:
+        session_id: ID of the session
+        request: NotesRequest with notes
+        current_user: Current authenticated user (must be TUTOR)
+        db: Database session
+        
+    Returns:
+        Updated Session
+        
+    Raises:
+        HTTPException 403: If not tutor
+        HTTPException 404: If session not found or not owned
+        HTTPException 409: If session is not IN_PROGRESS
+    """
+    # Check if current user is a tutor
+    if current_user.role != RoleEnum.TUTOR:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only tutors can update session notes",
+        )
+    
+    # Get session
+    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    
+    if not session or session.tutor_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+    
+    # Check if session is locked
+    try:
+        assert_session_not_locked(session)
+    except SessionLockedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Session is locked in {e.current_status} state. Cannot update notes.",
+        )
+    
+    # Can only update notes while IN_PROGRESS
+    from app.models import SessionStatusEnum
+    if session.status != SessionStatusEnum.IN_PROGRESS:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot update notes while session is {session.status.value}. Notes can only be updated while IN_PROGRESS.",
+        )
+    
+    session.notes = request.notes
+    
+    db.commit()
+    db.refresh(session)
+    
+    return session
+
+
+@router.patch("/{session_id}/trigger-ai-review", response_model=SessionResponse)
+async def trigger_ai_review(
+    session_id: UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Trigger AI review of a completed session (COMPLETED → AI_REVIEWED).
+    
+    Placeholder for Phase 5 AI integration. Currently just transitions status.
+    
+    Args:
+        session_id: ID of the session
+        current_user: Current authenticated user (must be TUTOR)
+        db: Database session
+        
+    Returns:
+        Updated Session
+        
+    Raises:
+        HTTPException 403: If not tutor
+        HTTPException 404: If session not found or not owned
+        HTTPException 409: If session is not COMPLETED
+    """
+    # Check if current user is a tutor
+    if current_user.role != RoleEnum.TUTOR:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only tutors can trigger AI review",
+        )
+    
+    # Get session
+    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    
+    if not session or session.tutor_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+    
+    # Attempt transition
+    try:
+        transition_session(session, "trigger_ai_review")
+    except InvalidTransitionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot transition from {e.current_status} to AI_REVIEWED via trigger_ai_review",
+        )
+    
+    # TODO: Phase 5 - Call AI service to generate summary and store in session.ai_summary
+    
+    db.commit()
+    db.refresh(session)
     
     return session
