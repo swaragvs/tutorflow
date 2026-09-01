@@ -4,10 +4,13 @@ import os
 from typing import Generator
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import StaticPool
 
-from app.db.session import Base
+from app.db.session import Base, get_db
+from app.main import app
 
 
 @pytest.fixture(scope="session")
@@ -20,13 +23,16 @@ def test_db_url():
 def test_engine(test_db_url):
     """Create a test database engine."""
 
-    engine = create_engine(
-        test_db_url,
-        echo=False,
-        connect_args={"check_same_thread": False}
-        if "sqlite" in test_db_url
-        else {},
-    )
+    # For SQLite in-memory, use StaticPool to ensure all connections share the same DB
+    engine_kwargs = {
+        "echo": False,
+    }
+    
+    if "sqlite" in test_db_url:
+        engine_kwargs["connect_args"] = {"check_same_thread": False}
+        engine_kwargs["poolclass"] = StaticPool
+
+    engine = create_engine(test_db_url, **engine_kwargs)
 
     # SQLite does not enforce foreign keys by default.
     if "sqlite" in test_db_url:
@@ -66,5 +72,27 @@ def db(test_engine) -> Generator[Session, None, None]:
     finally:
         session.rollback()
         session.close()
+
+
+@pytest.fixture
+def client(db: Session) -> TestClient:
+    """
+    Provide a TestClient that uses the test database.
+    
+    Overrides the get_db dependency so FastAPI routes query the test database
+    instead of the production DATABASE_URL.
+    """
+    def override_get_db():
+        yield db
+    
+    app.dependency_overrides[get_db] = override_get_db
+    
+    test_client = TestClient(app)
+    
+    yield test_client
+    
+    # Clean up
+    app.dependency_overrides.clear()
+
 
 
