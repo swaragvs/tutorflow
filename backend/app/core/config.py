@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str
     GEMINI_MODEL: str = "gemini-3.5-flash-lite"
 
+    # Session timing
+    SESSION_START_WINDOW_MINUTES: int = 15
+
     # CORS
     CORS_ORIGINS: str = "http://localhost:5173"
 
