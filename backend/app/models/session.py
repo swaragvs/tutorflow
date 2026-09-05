@@ -14,6 +14,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 
 from app.db.session import Base
 
@@ -65,6 +66,17 @@ class Session(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+    tutor = relationship("User", foreign_keys=[tutor_id], back_populates="tutor_sessions")
+    student = relationship("User", foreign_keys=[student_id], back_populates="student_sessions")
+
+    @property
+    def student_name(self):
+        return self.student.name if self.student else None
+
+    @property
+    def tutor_name(self):
+        return self.tutor.name if self.tutor else None
 
     # Composite index for overlap checking: (tutor_id, start_time)
     __table_args__ = (

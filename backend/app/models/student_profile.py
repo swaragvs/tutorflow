@@ -37,6 +37,13 @@ class StudentProfile(Base):
     preferences = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
+    user = relationship("User", foreign_keys=[user_id], back_populates="student_profiles")
+    tutor = relationship("User", foreign_keys=[tutor_id], back_populates="tutor_students")
+
+    @property
+    def name(self):
+        return self.user.name if self.user else None
+
     def __repr__(self):
         return (
             f"<StudentProfile(id={self.id}, user_id={self.user_id}, "
