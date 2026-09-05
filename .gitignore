@@ -40,3 +40,4 @@ report.md
 *.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+test-results/
