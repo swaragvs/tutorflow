@@ -14,7 +14,7 @@ class TestSessionStateTransitions:
     """Test legal session state transitions."""
 
     def test_transition_scheduled_to_in_progress(self, client, db):
-        """Test SCHEDULED → IN_PROGRESS transition."""
+        """Test SCHEDULED → IN_PROGRESS transition when the session is open for start."""
         # Setup: Create tutor, student, and SCHEDULED session
         tutor = User(
             email="tutor@example.com",
@@ -38,8 +38,8 @@ class TestSessionStateTransitions:
         session = SessionModel(
             tutor_id=tutor.id,
             student_id=student.id,
-            start_time=now + timedelta(hours=1),
-            end_time=now + timedelta(hours=2),
+            start_time=now - timedelta(minutes=5),
+            end_time=now + timedelta(minutes=55),
             status=SessionStatusEnum.SCHEDULED,
         )
         db.add(session)
@@ -292,8 +292,8 @@ class TestIllegalTransitions:
         session = SessionModel(
             tutor_id=tutor.id,
             student_id=student.id,
-            start_time=now + timedelta(hours=1),
-            end_time=now + timedelta(hours=2),
+            start_time=now - timedelta(hours=2),
+            end_time=now - timedelta(hours=1),
             status=SessionStatusEnum.COMPLETED,
             notes="Notes",
             homework="Homework",
@@ -313,7 +313,53 @@ class TestIllegalTransitions:
         )
 
         assert response.status_code == 409
-        assert "Cannot transition" in response.json()["detail"]
+        assert "Only SCHEDULED sessions can be started" in response.json()["detail"]
+
+    def test_in_progress_status_rejected_before_window_check(self, client, db):
+        """Test IN_PROGRESS sessions are rejected with a status error before the early-start window gate."""
+        tutor = User(
+            email="tutor@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        db.add(tutor)
+        
+        student = User(
+            email="student@example.com",
+            password_hash=hash_password("StudentPass123"),
+            role=RoleEnum.STUDENT,
+        )
+        db.add(student)
+        db.commit()
+
+        profile = StudentProfile(user_id=student.id, tutor_id=tutor.id)
+        db.add(profile)
+        
+        now = datetime.utcnow()
+        session = SessionModel(
+            tutor_id=tutor.id,
+            student_id=student.id,
+            start_time=now + timedelta(hours=1),
+            end_time=now + timedelta(hours=2),
+            status=SessionStatusEnum.IN_PROGRESS,
+            notes="Notes",
+            homework="Homework",
+        )
+        db.add(session)
+        db.commit()
+
+        token = create_access_token(
+            data={"sub": str(tutor.id), "role": tutor.role.value}
+        )
+
+        response = client.patch(
+            f"/sessions/{session.id}/start",
+            json={},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 409
+        assert "Only SCHEDULED sessions can be started" in response.json()["detail"]
 
     def test_ai_reviewed_to_anything_rejected(self, client, db):
         """Test illegal transitions from AI_REVIEWED are rejected."""

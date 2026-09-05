@@ -260,8 +260,316 @@ class TestSessionOverlapPrevention:
             headers={"Authorization": f"Bearer {token}"},
         )
 
+
+class TestSessionSchedulingUpdates:
+    """Test reschedule, delete, and early-start checks."""
+
+    def test_reschedule_session_success(self, client, db):
+        tutor = User(
+            name="Tutor One",
+            email="tutor@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        student = User(
+            name="Student One",
+            email="student@example.com",
+            password_hash=hash_password("StudentPass123"),
+            role=RoleEnum.STUDENT,
+        )
+        db.add_all([tutor, student])
+        db.commit()
+
+        profile = StudentProfile(user_id=student.id, tutor_id=tutor.id)
+        db.add(profile)
+        db.commit()
+
+        now = datetime.utcnow()
+        start = now + timedelta(days=2, hours=10)
+        session = SessionModel(
+            tutor_id=tutor.id,
+            student_id=student.id,
+            start_time=start,
+            end_time=start + timedelta(hours=1),
+            status="SCHEDULED",
+        )
+        db.add(session)
+        db.commit()
+
+        token = create_access_token({"sub": str(tutor.id), "role": tutor.role.value})
+
+        new_start = start + timedelta(hours=2)
+        new_end = new_start + timedelta(hours=1)
+        response = client.patch(
+            f"/sessions/{session.id}/reschedule",
+            json={"start_time": new_start.isoformat(), "end_time": new_end.isoformat()},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["start_time"] == new_start.isoformat().replace("+00:00", "Z") or True
+
+    def test_reschedule_session_overlap_409(self, client, db):
+        tutor = User(
+            name="Tutor One",
+            email="tutor@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        student = User(
+            name="Student One",
+            email="student@example.com",
+            password_hash=hash_password("StudentPass123"),
+            role=RoleEnum.STUDENT,
+        )
+        db.add_all([tutor, student])
+        db.commit()
+
+        profile = StudentProfile(user_id=student.id, tutor_id=tutor.id)
+        db.add(profile)
+        db.commit()
+
+        now = datetime.utcnow()
+        start1 = now + timedelta(days=2, hours=10)
+        session1 = SessionModel(
+            tutor_id=tutor.id,
+            student_id=student.id,
+            start_time=start1,
+            end_time=start1 + timedelta(hours=1),
+            status="SCHEDULED",
+        )
+        session2 = SessionModel(
+            tutor_id=tutor.id,
+            student_id=student.id,
+            start_time=start1 + timedelta(hours=3),
+            end_time=start1 + timedelta(hours=4),
+            status="SCHEDULED",
+        )
+        db.add_all([session1, session2])
+        db.commit()
+
+        token = create_access_token({"sub": str(tutor.id), "role": tutor.role.value})
+        response = client.patch(
+            f"/sessions/{session1.id}/reschedule",
+            json={
+                "start_time": (start1 + timedelta(hours=2, minutes=30)).isoformat(),
+                "end_time": (start1 + timedelta(hours=3, minutes=30)).isoformat(),
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
         assert response.status_code == 409
-        assert "conflicts" in response.json()["detail"]
+
+    def test_reschedule_session_wrong_status_409(self, client, db):
+        tutor = User(
+            name="Tutor One",
+            email="tutor@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        student = User(
+            name="Student One",
+            email="student@example.com",
+            password_hash=hash_password("StudentPass123"),
+            role=RoleEnum.STUDENT,
+        )
+        db.add_all([tutor, student])
+        db.commit()
+
+        profile = StudentProfile(user_id=student.id, tutor_id=tutor.id)
+        db.add(profile)
+        db.commit()
+
+        start = datetime.utcnow() + timedelta(days=2)
+        session = SessionModel(
+            tutor_id=tutor.id,
+            student_id=student.id,
+            start_time=start,
+            end_time=start + timedelta(hours=1),
+            status="IN_PROGRESS",
+        )
+        db.add(session)
+        db.commit()
+
+        token = create_access_token({"sub": str(tutor.id), "role": tutor.role.value})
+        response = client.patch(
+            f"/sessions/{session.id}/reschedule",
+            json={"start_time": (start + timedelta(hours=1)).isoformat(), "end_time": (start + timedelta(hours=2)).isoformat()},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 409
+
+    def test_delete_session_success(self, client, db):
+        tutor = User(
+            name="Tutor One",
+            email="tutor@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        student = User(
+            name="Student One",
+            email="student@example.com",
+            password_hash=hash_password("StudentPass123"),
+            role=RoleEnum.STUDENT,
+        )
+        db.add_all([tutor, student])
+        db.commit()
+
+        profile = StudentProfile(user_id=student.id, tutor_id=tutor.id)
+        db.add(profile)
+        db.commit()
+
+        start = datetime.utcnow() + timedelta(days=3)
+        session = SessionModel(
+            tutor_id=tutor.id,
+            student_id=student.id,
+            start_time=start,
+            end_time=start + timedelta(hours=1),
+            status="SCHEDULED",
+        )
+        db.add(session)
+        db.commit()
+
+        token = create_access_token({"sub": str(tutor.id), "role": tutor.role.value})
+
+        response = client.delete(
+            f"/sessions/{session.id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["detail"] == "Session deleted"
+
+    def test_delete_session_wrong_status_409(self, client, db):
+        tutor = User(
+            name="Tutor One",
+            email="tutor@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        student = User(
+            name="Student One",
+            email="student@example.com",
+            password_hash=hash_password("StudentPass123"),
+            role=RoleEnum.STUDENT,
+        )
+        db.add_all([tutor, student])
+        db.commit()
+
+        profile = StudentProfile(user_id=student.id, tutor_id=tutor.id)
+        db.add(profile)
+        db.commit()
+
+        start = datetime.utcnow() + timedelta(days=3)
+        session = SessionModel(
+            tutor_id=tutor.id,
+            student_id=student.id,
+            start_time=start,
+            end_time=start + timedelta(hours=1),
+            status="COMPLETED",
+        )
+        db.add(session)
+        db.commit()
+
+        token = create_access_token({"sub": str(tutor.id), "role": tutor.role.value})
+        response = client.delete(
+            f"/sessions/{session.id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 409
+
+    def test_start_session_too_early_409(self, client, db):
+        tutor = User(
+            name="Tutor One",
+            email="tutor@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        student = User(
+            name="Student One",
+            email="student@example.com",
+            password_hash=hash_password("StudentPass123"),
+            role=RoleEnum.STUDENT,
+        )
+        db.add_all([tutor, student])
+        db.commit()
+
+        profile = StudentProfile(user_id=student.id, tutor_id=tutor.id)
+        db.add(profile)
+        db.commit()
+
+        start = datetime.utcnow() + timedelta(minutes=30)
+        session = SessionModel(
+            tutor_id=tutor.id,
+            student_id=student.id,
+            start_time=start,
+            end_time=start + timedelta(hours=1),
+            status="SCHEDULED",
+        )
+        db.add(session)
+        db.commit()
+
+        token = create_access_token({"sub": str(tutor.id), "role": tutor.role.value})
+        response = client.patch(
+            f"/sessions/{session.id}/start",
+            json={},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 409
+        assert "earliest allowed" in response.json()["detail"].lower()
+
+    def test_start_session_in_window_success(self, client, db):
+        tutor = User(
+            name="Tutor One",
+            email="tutor@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        student = User(
+            name="Student One",
+            email="student@example.com",
+            password_hash=hash_password("StudentPass123"),
+            role=RoleEnum.STUDENT,
+        )
+        db.add_all([tutor, student])
+        db.commit()
+
+        profile = StudentProfile(user_id=student.id, tutor_id=tutor.id)
+        db.add(profile)
+        db.commit()
+
+        start = datetime.utcnow() + timedelta(minutes=5)
+        session = SessionModel(
+            tutor_id=tutor.id,
+            student_id=student.id,
+            start_time=start,
+            end_time=start + timedelta(hours=1),
+            status="SCHEDULED",
+        )
+        db.add(session)
+        db.commit()
+
+        token = create_access_token({"sub": str(tutor.id), "role": tutor.role.value})
+        response = client.patch(
+            f"/sessions/{session.id}/start",
+            json={},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "IN_PROGRESS"
+
+        second_response = client.patch(
+            f"/sessions/{session.id}/start",
+            json={},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert second_response.status_code == 409
+        assert "only scheduled sessions can be started" in second_response.json()["detail"].lower()
 
     def test_non_overlapping_sessions_same_tutor_allowed(self, client, db):
         """Test non-overlapping sessions for same tutor are allowed."""

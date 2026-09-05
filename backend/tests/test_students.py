@@ -259,16 +259,107 @@ class TestStudentRetrieval:
             data={"sub": str(tutor.id), "role": tutor.role.value}
         )
 
-        # Get student
-        response = client.get(
+
+class TestStudentProfileUpdates:
+    """Test profile editing on owned students."""
+
+    def test_patch_student_profile_success(self, client, db):
+        tutor = User(
+            name="Tutor One",
+            email="tutor@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        student = User(
+            name="Student One",
+            email="student@example.com",
+            password_hash=hash_password("StudentPass123"),
+            role=RoleEnum.STUDENT,
+        )
+        db.add_all([tutor, student])
+        db.commit()
+
+        profile = StudentProfile(
+            user_id=student.id,
+            tutor_id=tutor.id,
+            learning_goals="Old goal",
+            skill_level="Beginner",
+            preferences="Old pref",
+        )
+        db.add(profile)
+        db.commit()
+
+        token = create_access_token({"sub": str(tutor.id), "role": tutor.role.value})
+
+        response = client.patch(
             f"/students/{profile.id}",
+            json={
+                "name": "Updated Student",
+                "learning_goals": "New goal",
+                "skill_level": "Intermediate",
+                "preferences": "New pref",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 200
         data = response.json()
+        assert data["name"] == "Updated Student"
+        assert data["learning_goals"] == "New goal"
+        assert data["skill_level"] == "Intermediate"
+        assert data["preferences"] == "New pref"
+
+    def test_patch_student_profile_wrong_tutor_404(self, client, db):
+        tutor_a = User(
+            name="Tutor A",
+            email="tutora@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        tutor_b = User(
+            name="Tutor B",
+            email="tutorb@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        student = User(
+            name="Student One",
+            email="student@example.com",
+            password_hash=hash_password("StudentPass123"),
+            role=RoleEnum.STUDENT,
+        )
+        db.add_all([tutor_a, tutor_b, student])
+        db.commit()
+
+        profile = StudentProfile(
+            user_id=student.id,
+            tutor_id=tutor_a.id,
+            learning_goals="Goal",
+        )
+        db.add(profile)
+        db.commit()
+
+        token = create_access_token({"sub": str(tutor_b.id), "role": tutor_b.role.value})
+
+        response = client.patch(
+            f"/students/{profile.id}",
+            json={"name": "Should fail"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 404
+
+        # Verify the legitimate owner can still fetch the student after the blocked update
+        owner_token = create_access_token({"sub": str(tutor_a.id), "role": tutor_a.role.value})
+        response = client.get(
+            f"/students/{profile.id}",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
         assert data["user_id"] == str(student.id)
-        assert data["learning_goals"] == "Python"
+        assert data["learning_goals"] == "Goal"
         assert data["email"] == "student@example.com"
 
     def test_get_student_tutor_cannot_view_other_tutor_student(self, client, db):
