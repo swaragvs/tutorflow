@@ -28,6 +28,8 @@ class SessionResponse(BaseModel):
     id: UUID
     tutor_id: UUID
     student_id: UUID
+    tutor_name: Optional[str] = None
+    student_name: Optional[str] = None
     start_time: datetime
     end_time: datetime
     status: str
@@ -51,6 +53,20 @@ class SessionConflictResponse(BaseModel):
 class SessionStartRequest(BaseModel):
     """Request schema for starting a session."""
     pass  # No body required
+
+
+class SessionRescheduleRequest(BaseModel):
+    """Request schema for rescheduling a scheduled session."""
+    start_time: datetime = Field(..., description="New session start time")
+    end_time: datetime = Field(..., description="New session end time")
+
+    @field_validator("end_time")
+    @classmethod
+    def end_time_after_start_time(cls, v, info):
+        start_time = info.data.get("start_time")
+        if start_time and v <= start_time:
+            raise ValueError("end_time must be after start_time")
+        return v
 
 
 class SessionCompleteRequest(BaseModel):
