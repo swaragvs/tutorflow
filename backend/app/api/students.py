@@ -9,7 +9,7 @@ from app.core.security import hash_password
 from app.db.session import get_db
 from app.deps import get_current_user, CurrentUser
 from app.models import User, StudentProfile, RoleEnum
-from app.schemas.student import StudentCreateRequest, StudentResponse, StudentDetailResponse
+from app.schemas.student import StudentCreateRequest, StudentUpdateRequest, StudentResponse, StudentDetailResponse
 
 router = APIRouter(prefix="/students", tags=["students"])
 
@@ -55,6 +55,7 @@ async def create_student(
     
     # Create student user account
     student_user = User(
+        name=request.name or "Student",
         email=request.email,
         password_hash=hash_password(request.initial_password),
         role=RoleEnum.STUDENT,
@@ -165,6 +166,7 @@ async def get_student(
         id=student_profile.id,
         user_id=student_profile.user_id,
         tutor_id=student_profile.tutor_id,
+        name=student_user.name if student_user else None,
         learning_goals=student_profile.learning_goals,
         skill_level=student_profile.skill_level,
         preferences=student_profile.preferences,
@@ -173,3 +175,60 @@ async def get_student(
     )
     
     return response
+
+
+@router.patch("/{student_id}", response_model=StudentDetailResponse)
+async def update_student(
+    student_id: UUID,
+    request: StudentUpdateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update a student's own profile fields (tutor-only)."""
+    if current_user.role != RoleEnum.TUTOR:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only tutors can update student details",
+        )
+
+    student_profile = (
+        db.query(StudentProfile)
+        .filter(
+            StudentProfile.id == student_id,
+            StudentProfile.tutor_id == current_user.user_id,
+        )
+        .first()
+    )
+    if not student_profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Student not found",
+        )
+
+    student_user = db.query(User).filter(User.id == student_profile.user_id).first()
+    if student_user and request.name is not None:
+        student_user.name = request.name.strip() or student_user.name
+
+    if request.learning_goals is not None:
+        student_profile.learning_goals = request.learning_goals
+    if request.skill_level is not None:
+        student_profile.skill_level = request.skill_level
+    if request.preferences is not None:
+        student_profile.preferences = request.preferences
+
+    db.commit()
+    db.refresh(student_profile)
+    if student_user:
+        db.refresh(student_user)
+
+    return StudentDetailResponse(
+        id=student_profile.id,
+        user_id=student_profile.user_id,
+        tutor_id=student_profile.tutor_id,
+        name=student_user.name if student_user else None,
+        learning_goals=student_profile.learning_goals,
+        skill_level=student_profile.skill_level,
+        preferences=student_profile.preferences,
+        created_at=student_profile.created_at,
+        email=student_user.email if student_user else None,
+    )

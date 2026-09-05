@@ -44,6 +44,7 @@ class UserResponse(BaseModel):
     """Response containing user information."""
     
     id: str = Field(..., description="User ID (UUID)")
+    name: str = Field(..., description="Display name")
     email: str = Field(..., description="User email address")
     role: str = Field(..., description="User role (TUTOR or STUDENT)")
     
@@ -81,6 +82,7 @@ async def register_tutor(request: RegisterTutorRequest, db: Session = Depends(ge
     
     # Create new tutor user
     user = User(
+        name=request.email.split("@", 1)[0].replace(".", " ").title() or "Tutor",
         email=request.email,
         password_hash=hash_password(request.password),
         role=RoleEnum.TUTOR,
@@ -91,6 +93,7 @@ async def register_tutor(request: RegisterTutorRequest, db: Session = Depends(ge
     
     return UserResponse(
         id=str(user.id),
+        name=user.name,
         email=user.email,
         role=user.role.value,
     )
@@ -149,6 +152,7 @@ async def get_me(
     """
     return UserResponse(
         id=str(current_user.user_id),
+        name=current_user.name if hasattr(current_user, "name") else "Unknown",
         email=current_user.email,
         role=current_user.role.value,
     )

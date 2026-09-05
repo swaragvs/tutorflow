@@ -1,11 +1,13 @@
 """Sessions API endpoints with overlap prevention."""
 
 import json
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.deps import get_current_user, CurrentUser
 from app.models import Session as SessionModel, StudentProfile, RoleEnum, SessionStatusEnum, User
@@ -13,6 +15,7 @@ from app.schemas.session import (
     SessionCreateRequest,
     SessionResponse,
     SessionStartRequest,
+    SessionRescheduleRequest,
     SessionCompleteRequest,
     SessionNotesRequest,
     SessionAIPlanRequest,
@@ -265,7 +268,23 @@ async def start_session(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Session not found",
         )
+
+    if session.status != SessionStatusEnum.SCHEDULED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot start session in {session.status.value} state. Only SCHEDULED sessions can be started.",
+        )
     
+    earliest_allowed = session.start_time - timedelta(minutes=settings.SESSION_START_WINDOW_MINUTES)
+    if datetime.utcnow() < earliest_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Earliest allowed start time is {earliest_allowed.strftime('%Y-%m-%d %H:%M:%S')}. "
+                "The session is not yet open for start."
+            ),
+        )
+
     # Attempt transition
     try:
         transition_session(session, "start")
@@ -279,6 +298,84 @@ async def start_session(
     db.refresh(session)
     
     return session
+
+
+@router.patch("/{session_id}/reschedule", response_model=SessionResponse)
+async def reschedule_session(
+    session_id: UUID,
+    request: SessionRescheduleRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Reschedule a scheduled session for its tutor."""
+    if current_user.role != RoleEnum.TUTOR:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only tutors can reschedule sessions",
+        )
+
+    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    if not session or session.tutor_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+
+    if session.status != SessionStatusEnum.SCHEDULED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot reschedule a session in {session.status.value} state. Only SCHEDULED sessions can be rescheduled.",
+        )
+
+    conflicting_session = check_session_overlap(
+        current_user.user_id,
+        request.start_time,
+        request.end_time,
+        db,
+        exclude_session_id=session.id,
+    )
+    if conflicting_session:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Session conflicts with existing booking from {conflicting_session.start_time} to {conflicting_session.end_time}",
+        )
+
+    session.start_time = request.start_time
+    session.end_time = request.end_time
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+@router.delete("/{session_id}", response_model=dict)
+async def delete_session(
+    session_id: UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Hard-delete a scheduled session for its tutor."""
+    if current_user.role != RoleEnum.TUTOR:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only tutors can delete sessions",
+        )
+
+    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    if not session or session.tutor_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+
+    if session.status != SessionStatusEnum.SCHEDULED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot delete a session in {session.status.value} state. Only SCHEDULED sessions can be deleted.",
+        )
+
+    db.delete(session)
+    db.commit()
+    return {"detail": "Session deleted"}
 
 
 @router.patch("/{session_id}/complete", response_model=SessionResponse)

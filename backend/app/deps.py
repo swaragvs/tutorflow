@@ -15,9 +15,10 @@ from app.models import User, RoleEnum
 class CurrentUser:
     """Represents the currently authenticated user."""
     
-    def __init__(self, user_id: UUID, email: str, role: RoleEnum):
+    def __init__(self, user_id: UUID, name: str, email: str, role: RoleEnum):
         self.user_id = user_id
         self.id = user_id  # Alias for convenience
+        self.name = name
         self.email = email
         self.role = role
 
@@ -97,7 +98,7 @@ def get_current_user(
             detail="User not found",
         )
     
-    return CurrentUser(user_id=user.id, email=user.email, role=user.role)
+    return CurrentUser(user_id=user.id, name=user.name, email=user.email, role=user.role)
 
 
 def require_role(required_role: RoleEnum):
