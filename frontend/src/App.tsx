@@ -18,6 +18,7 @@ type Student = {
   id: string;
   user_id: string;
   tutor_id: string;
+  name?: string | null;
   email?: string;
   learning_goals?: string | null;
   skill_level?: string | null;
@@ -38,6 +39,8 @@ type Session = {
   ai_summary?: string | null;
   created_at: string;
   updated_at: string;
+  student_name?: string | null;
+  tutor_name?: string | null;
 };
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -58,6 +61,7 @@ function parseRoleFromToken(token: string | null): Role | null {
 
 function getDashboardPath(role: Role | null) {
   if (role === "TUTOR") return "/dashboard";
+  if (role === "STUDENT") return "/student/dashboard";
   return "/login";
 }
 
@@ -93,10 +97,23 @@ async function apiFetch(path: string, options: RequestInit = {}) {
         message = "Request failed";
       }
     }
-    throw new Error(message);
+
+    const error = new Error(message) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
   }
 
   return response;
+}
+
+function isNotFoundLikeError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+
+  const status = (error as Error & { status?: number }).status;
+  if (status === 403 || status === 404) return true;
+
+  const normalized = error.message.toLowerCase();
+  return normalized.includes("not found") || normalized.includes("forbidden");
 }
 
 function parseJsonField(raw: string | null | undefined) {
@@ -110,8 +127,12 @@ function parseJsonField(raw: string | null | undefined) {
 
 const IST_TIMEZONE = "Asia/Kolkata";
 
+function parseApiDate(value: string) {
+  return new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`);
+}
+
 function formatDateTime(value: string) {
-  const date = new Date(value);
+  const date = parseApiDate(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en-IN", {
     timeZone: IST_TIMEZONE,
@@ -125,8 +146,12 @@ function formatShortId(value: string | null | undefined, fallback = "N/A") {
   return value.slice(0, 8).toUpperCase();
 }
 
-function getSessionTitle(session: Session) {
-  return `Session #${formatShortId(session.id)}`;
+function getSessionPersonLabel(session: Session, role: Role, students: Student[] = []) {
+  if (role === "TUTOR") {
+    const student = students.find((item) => item.user_id === session.student_id);
+    return session.student_name || formatStudentLabel(student);
+  }
+  return session.tutor_name || "Your tutor";
 }
 
 function formatStatusLabel(status: SessionStatus) {
@@ -141,12 +166,62 @@ function formatStatusLabel(status: SessionStatus) {
 
 function formatStudentLabel(student: Student | null | undefined) {
   if (!student) return "Unknown student";
-  return student.email || `Student ${formatShortId(student.user_id, "Unknown")}`;
+  return student.name || student.email || `Student ${formatShortId(student.user_id, "Unknown")}`;
+}
+
+function formatSessionTime(session: Session) {
+  const end = parseApiDate(session.end_time);
+  const hasEnded = session.status === "IN_PROGRESS" && end.getTime() < Date.now();
+  if (hasEnded) return `Scheduled end: ${formatDateTime(session.end_time)}`;
+  return `${formatDateTime(session.start_time)} → ${formatDateTime(session.end_time)}`;
+}
+
+const lifecycleStatuses: SessionStatus[] = ["SCHEDULED", "IN_PROGRESS", "COMPLETED", "AI_REVIEWED"];
+
+function LifecycleStepper({ status }: { status: SessionStatus }) {
+  const currentIndex = lifecycleStatuses.indexOf(status);
+  return (
+    <div className="lifecycle-stepper" aria-label={`Session lifecycle: ${formatStatusLabel(status)}`}>
+      {lifecycleStatuses.map((step, index) => (
+        <div key={step} className={`lifecycle-step ${index < currentIndex ? "done" : ""} ${index === currentIndex ? "current" : ""}`}>
+          <span className="lifecycle-dot">{index < currentIndex ? "✓" : index + 1}</span>
+          <span>{formatStatusLabel(step)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function renderAiContent(title: string, raw: string | null | undefined, fields: string[]) {
+  const content = parseJsonField(raw);
+  if (!content) return null;
+  if (typeof content === "string") return <div className="info-block"><h3>{title}</h3><p>{content}</p></div>;
+  return (
+    <div className="info-block">
+      <h3>{title}</h3>
+      {fields.map((field) => {
+        const value = content[field];
+        const label = field.replace(/_/g, " ").replace(/^./, (letter: string) => letter.toUpperCase());
+        return <p key={field}><strong>{label}:</strong> {Array.isArray(value) ? value.join(", ") : value || "Not specified"}</p>;
+      })}
+    </div>
+  );
+}
+
+function getActionError(error: unknown, fallback: string) {
+  if (!(error instanceof Error)) return fallback;
+  const typed = error as Error & { status?: number };
+  if (typed.status !== 409) return error.message || fallback;
+  const times = error.message.match(/\d{4}-\d{2}-\d{2}T[^\s,]+/g) ?? [];
+  if (times.length >= 2) {
+    return `You already have a session scheduled for ${formatDateTime(times[0] ?? "")} → ${formatDateTime(times[1] ?? "")}. Choose another time.`;
+  }
+  return `You already have a session at the conflicting time. Choose another time.`;
 }
 
 function sortSessions(sessions: Session[]) {
   return [...sessions].sort(
-    (a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime(),
+    (a, b) => parseApiDate(a.start_time).getTime() - parseApiDate(b.start_time).getTime(),
   );
 }
 
@@ -176,12 +251,18 @@ function AppLayout({ title, children, actions }: { title: string; children: Reac
     navigate("/login");
   };
 
-  const navLinks = (
-    <>
-      <Link to="/dashboard">Dashboard</Link>
-      <Link to="/students">Students</Link>
-    </>
-  );
+  const navLinks =
+    role === "STUDENT" ? (
+      <>
+        <Link to="/student/dashboard">Dashboard</Link>
+        <Link to="/student/history">History</Link>
+      </>
+    ) : (
+      <>
+        <Link to="/dashboard">Dashboard</Link>
+        <Link to="/students">Students</Link>
+      </>
+    );
 
   return (
     <div className="page-shell">
@@ -191,7 +272,6 @@ function AppLayout({ title, children, actions }: { title: string; children: Reac
         </div>
         <nav className="topbar-nav">
           {navLinks}
-          {actions}
           {token ? (
             <button type="button" className="ghost-button" onClick={handleLogout}>
               Logout
@@ -287,7 +367,7 @@ function LoginPage() {
         <h1>TutorFlow</h1>
         <p>Learning sessions with clear scheduling and AI support</p>
 
-        {error ? <div className="error-banner">{error}</div> : null}
+        {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
         {message ? <div className="success-banner">{message}</div> : null}
 
         {showTutorSignup ? (
@@ -340,6 +420,7 @@ function LoginPage() {
 
 function TutorDashboard() {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -349,6 +430,8 @@ function TutorDashboard() {
         const response = await apiFetch("/sessions");
         const data: Session[] = await response.json();
         setSessions(sortSessions(data));
+        const studentsResponse = await apiFetch("/students");
+        setStudents(await studentsResponse.json());
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unable to load sessions");
       } finally {
@@ -358,32 +441,39 @@ function TutorDashboard() {
     load();
   }, []);
 
-  const upcoming = useMemo(
-    () =>
-      sessions
-        .filter((session) => session.status === "SCHEDULED" || session.status === "IN_PROGRESS")
-        .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime()),
-    [sessions],
-  );
+  const scheduled = useMemo(() => sessions.filter((session) => session.status === "SCHEDULED"), [sessions]);
+  const inProgress = useMemo(() => sessions.filter((session) => session.status === "IN_PROGRESS"), [sessions]);
 
   return (
     <AppLayout title="Tutor Dashboard" actions={<Link to="/sessions/new" className="primary-link">Schedule Session</Link>}>
-      {error ? <div className="error-banner">{error}</div> : null}
+      {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
       {loading ? <p>Loading...</p> : null}
       <div className="section-header">
-        <h2>Upcoming sessions</h2>
+        <h2>Scheduled sessions</h2>
         <Link to="/students">Manage students</Link>
       </div>
-      {!loading && upcoming.length === 0 ? <p>No upcoming sessions.</p> : null}
+      {!loading && scheduled.length === 0 ? <p className="empty-state">No scheduled sessions - you&apos;re all caught up.</p> : null}
       <div className="card-list">
-        {upcoming.map((session) => (
+        {scheduled.map((session) => (
           <Link key={session.id} to={`/sessions/${session.id}`} className="session-card">
             <div className="row-between">
-              <strong>{formatStatusLabel(session.status)}</strong>
-              <span>{getSessionTitle(session)}</span>
+              <strong>{getSessionPersonLabel(session, "TUTOR", students)}</strong>
+              <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
             </div>
-            <div><strong>Time:</strong> {formatDateTime(session.start_time)} → {formatDateTime(session.end_time)}</div>
-            <div><strong>Session ID:</strong> {session.id}</div>
+            <div><strong>Time:</strong> {formatSessionTime(session)}</div>
+          </Link>
+        ))}
+      </div>
+      <div className="section-header"><h2>In-progress sessions</h2></div>
+      {!loading && inProgress.length === 0 ? <p className="empty-state">No sessions are currently in progress.</p> : null}
+      <div className="card-list">
+        {inProgress.map((session) => (
+          <Link key={session.id} to={`/sessions/${session.id}`} className="session-card">
+            <div className="row-between">
+              <strong>{getSessionPersonLabel(session, "TUTOR", students)}</strong>
+              <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
+            </div>
+            <div><strong>Time:</strong> {formatSessionTime(session)}</div>
           </Link>
         ))}
       </div>
@@ -398,6 +488,7 @@ function StudentListPage() {
   const [showForm, setShowForm] = useState(false);
   const [createdStudent, setCreatedStudent] = useState<{ email: string; password: string } | null>(null);
   const [form, setForm] = useState({
+    name: "",
     email: "",
     initial_password: "",
     learning_goals: "",
@@ -432,7 +523,7 @@ function StudentListPage() {
         email: form.email,
         password: form.initial_password,
       });
-      setForm({ email: "", initial_password: "", learning_goals: "", skill_level: "", preferences: "" });
+      setForm({ name: "", email: "", initial_password: "", learning_goals: "", skill_level: "", preferences: "" });
       setShowForm(false);
       setError("");
     } catch (err) {
@@ -442,9 +533,9 @@ function StudentListPage() {
 
   return (
     <AppLayout title="Students">
-      {error ? <div className="error-banner">{error}</div> : null}
+      {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
       {createdStudent ? (
-        <div className="success-banner">
+        <div className="success-banner" data-testid="credential-panel">
           <strong>Student created.</strong>
           <div>Email: {createdStudent.email}</div>
           <div>Temporary password: {createdStudent.password}</div>
@@ -458,6 +549,10 @@ function StudentListPage() {
       </div>
       {showForm ? (
         <form onSubmit={handleSubmit} className="stacked-form form-card">
+          <label>
+            Name
+            <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+          </label>
           <label>
             Email
             <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
@@ -489,7 +584,6 @@ function StudentListPage() {
               <strong>{formatStudentLabel(student)}</strong>
               <span>{student.skill_level ?? "No level"}</span>
             </div>
-            <div><strong>Student ID:</strong> {formatShortId(student.user_id, "Unknown")}</div>
             <div>{student.learning_goals || "No learning goals provided"}</div>
           </Link>
         ))}
@@ -504,6 +598,8 @@ function StudentDetailPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [nameDraft, setNameDraft] = useState("");
+  const [editMode, setEditMode] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -512,6 +608,7 @@ function StudentDetailPage() {
         const studentResponse = await apiFetch(`/students/${studentId}`);
         const studentData = await studentResponse.json();
         setStudent(studentData);
+        setNameDraft(studentData.name ?? "");
 
         const sessionsResponse = await apiFetch("/sessions");
         const sessionData: Session[] = await sessionsResponse.json();
@@ -529,16 +626,32 @@ function StudentDetailPage() {
   if (!student) {
     return (
       <AppLayout title="Student detail">
-        <div className="error-banner">{error || "Student not found."}</div>
+        <div className="error-banner" data-testid="error-message">{error || "Student not found."}</div>
       </AppLayout>
     );
   }
+
+  const handleSaveStudent = async (event: React.FormEvent) => {
+    event.preventDefault();
+    try {
+      const response = await apiFetch(`/students/${student.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: nameDraft }),
+      });
+      setStudent(await response.json());
+      setEditMode(false);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update student");
+    }
+  };
 
   return (
     <AppLayout
       title={student.email ?? "Student details"}
       actions={<Link to={`/sessions/new?studentId=${student.user_id}`} className="primary-link">Schedule session</Link>}
     >
+      {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
       <div className="profile-grid">
         <div>
           <p><strong>Student:</strong> {formatStudentLabel(student)}</p>
@@ -549,6 +662,17 @@ function StudentDetailPage() {
           <p><strong>Preferences:</strong> {student.preferences || "Not specified"}</p>
         </div>
       </div>
+      {editMode ? (
+        <form onSubmit={handleSaveStudent} className="stacked-form form-card">
+          <label>
+            Name
+            <input data-testid="student-name-input" value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} required />
+          </label>
+          <button type="submit" data-testid="save-student-btn">Save student</button>
+        </form>
+      ) : (
+        <button type="button" onClick={() => setEditMode(true)}>Edit student</button>
+      )}
 
       <h2>Session history</h2>
       {sessions.length === 0 ? <p>No sessions.</p> : null}
@@ -556,11 +680,10 @@ function StudentDetailPage() {
         {sessions.map((session) => (
           <Link key={session.id} to={`/sessions/${session.id}`} className="session-card">
             <div className="row-between">
-              <strong>{formatStatusLabel(session.status)}</strong>
-              <span>{getSessionTitle(session)}</span>
+              <strong>{getSessionPersonLabel(session, "TUTOR", [student])}</strong>
+              <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
             </div>
-            <div><strong>Time:</strong> {formatDateTime(session.start_time)} → {formatDateTime(session.end_time)}</div>
-            <div><strong>Session ID:</strong> {session.id}</div>
+            <div><strong>Time:</strong> {formatSessionTime(session)}</div>
           </Link>
         ))}
       </div>
@@ -617,21 +740,20 @@ function NewSessionPage() {
       const created: Session = await response.json();
       navigate(`/sessions/${created.id}`);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to create session";
-      setError(message);
+      setError(getActionError(err, "Unable to create session"));
     }
   };
 
   return (
     <AppLayout title="Schedule session">
-      {error ? <div className="error-banner">{error}</div> : null}
+      {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
       {loading ? <p>Loading students...</p> : (
         <form onSubmit={handleSubmit} className="stacked-form form-card">
           <label>
             Student
             <select value={studentId} onChange={(e) => setStudentId(e.target.value)} required>
               {students.map((student) => (
-                <option key={student.user_id} value={student.user_id}>{student.email ?? student.user_id}</option>
+                <option key={student.user_id} value={student.user_id}>{formatStudentLabel(student)}</option>
               ))}
             </select>
           </label>
@@ -650,6 +772,181 @@ function NewSessionPage() {
   );
 }
 
+function StudentDashboard() {
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const response = await apiFetch("/sessions");
+        const data: Session[] = await response.json();
+        setSessions(sortSessions(data));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unable to load your sessions");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, []);
+
+  const scheduled = useMemo(() => sessions.filter((session) => session.status === "SCHEDULED"), [sessions]);
+  const inProgress = useMemo(() => sessions.filter((session) => session.status === "IN_PROGRESS"), [sessions]);
+
+  return (
+    <AppLayout title="Student Dashboard">
+      {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
+      {loading ? <p>Loading...</p> : null}
+      {!loading && scheduled.length === 0 && inProgress.length === 0 ? <p className="empty-state">No upcoming sessions - you&apos;re all caught up.</p> : null}
+      {scheduled.length > 0 ? <h2>Scheduled sessions</h2> : null}
+      <div className="card-list">
+        {scheduled.map((session) => (
+          <Link key={session.id} to={`/student/sessions/${session.id}`} className="session-card">
+            <div className="row-between">
+              <strong>{getSessionPersonLabel(session, "STUDENT")}</strong>
+              <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
+            </div>
+            <div><strong>Time:</strong> {formatSessionTime(session)}</div>
+          </Link>
+        ))}
+      </div>
+      {inProgress.length > 0 ? <h2>In-progress sessions</h2> : null}
+      <div className="card-list">
+        {inProgress.map((session) => (
+          <Link key={session.id} to={`/student/sessions/${session.id}`} className="session-card">
+            <div className="row-between">
+              <strong>{getSessionPersonLabel(session, "STUDENT")}</strong>
+              <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
+            </div>
+            <div><strong>Time:</strong> {formatSessionTime(session)}</div>
+          </Link>
+        ))}
+      </div>
+    </AppLayout>
+  );
+}
+
+function StudentHistoryPage() {
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const response = await apiFetch("/sessions");
+        const data: Session[] = await response.json();
+        setSessions(
+          sortSessions(
+            data.filter((session) => session.status === "COMPLETED" || session.status === "AI_REVIEWED"),
+          ),
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unable to load your history");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, []);
+
+  return (
+    <AppLayout title="Session History">
+      {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
+      {loading ? <p>Loading...</p> : null}
+      {!loading && sessions.length === 0 ? <p>No past sessions yet.</p> : null}
+      <div className="card-list">
+        {sessions.map((session) => (
+          <Link key={session.id} to={`/student/sessions/${session.id}`} className="session-card">
+            <div className="row-between">
+              <strong>{getSessionPersonLabel(session, "STUDENT")}</strong>
+              <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
+            </div>
+            <div><strong>Time:</strong> {formatSessionTime(session)}</div>
+          </Link>
+        ))}
+      </div>
+    </AppLayout>
+  );
+}
+
+function StudentSessionDetailPage() {
+  const { sessionId } = useParams();
+  const [session, setSession] = useState<Session | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const loadSession = async () => {
+      if (!sessionId) return;
+
+      try {
+        const response = await apiFetch(`/sessions/${sessionId}`);
+        const data: Session = await response.json();
+        setSession(data);
+        setError("");
+      } catch (err) {
+        if (isNotFoundLikeError(err)) {
+          setSession(null);
+          setError("This session could not be found or is not available to you.");
+        } else {
+          setError(err instanceof Error ? err.message : "Unable to load session");
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadSession();
+  }, [sessionId]);
+
+  if (loading) return <AppLayout title="Session details"><p>Loading...</p></AppLayout>;
+
+  if (!session) {
+    return (
+      <AppLayout title="Session not found" actions={<Link to="/student/dashboard" className="primary-link">Back to dashboard</Link>}>
+        <div className="error-banner" data-testid="error-message">{error || "This session could not be found or is not available to you."}</div>
+      </AppLayout>
+    );
+  }
+
+  const aiSummary = parseJsonField(session.ai_summary);
+
+  return (
+    <AppLayout title={getSessionPersonLabel(session, "STUDENT")} actions={<Link to="/student/dashboard" className="primary-link">Back to dashboard</Link>}>
+      <div className="session-meta">
+        <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
+        <span><strong>Time:</strong> {formatSessionTime(session)}</span>
+      </div>
+      <LifecycleStepper status={session.status} />
+
+      <div className="stacked-form form-card">
+        <label>
+          Notes
+          <small>Notes capture what you worked on and what to revisit.</small>
+          <textarea value={session.notes ?? ""} readOnly rows={6} />
+        </label>
+        <label>
+          Homework
+          <small>Homework records practice to complete before the next session.</small>
+          <textarea value={session.homework ?? ""} readOnly rows={4} />
+        </label>
+      </div>
+
+      {session.ai_plan ? renderAiContent("AI Plan", session.ai_plan, ["warm_up", "main_focus", "practice_activities", "check_for_understanding"]) : null}
+      {session.ai_summary && aiSummary ? renderAiContent("AI Summary", session.ai_summary, ["summary", "strengths", "areas_to_improve", "recommended_next_topic"]) : null}
+
+      {!session.notes && !session.homework && session.status !== "AI_REVIEWED" ? (
+        <p>No notes or homework are available for this session yet.</p>
+      ) : null}
+    </AppLayout>
+  );
+}
+
 function SessionDetailPage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
@@ -658,6 +955,14 @@ function SessionDetailPage() {
   const [homeworkDraft, setHomeworkDraft] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [rescheduleMode, setRescheduleMode] = useState(false);
+  const [rescheduleStart, setRescheduleStart] = useState("");
+  const [rescheduleEnd, setRescheduleEnd] = useState("");
+  const [students, setStudents] = useState<Student[]>([]);
+  const [savingNotes, setSavingNotes] = useState(false);
+  const [notesSaved, setNotesSaved] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
 
   const loadSession = async () => {
     if (!sessionId) return;
@@ -668,6 +973,12 @@ function SessionDetailPage() {
       setNotesDraft(data.notes ?? "");
       setHomeworkDraft(data.homework ?? "");
       setError("");
+      try {
+        const studentsResponse = await apiFetch("/students");
+        setStudents(await studentsResponse.json());
+      } catch {
+        // Session data remains usable if the roster request is unavailable.
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load session");
     } finally {
@@ -692,14 +1003,43 @@ function SessionDetailPage() {
     }
   };
 
+  const handleReschedule = async (event: React.FormEvent) => {
+    event.preventDefault();
+    try {
+      const response = await apiFetch(`/sessions/${sessionId}/reschedule`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          start_time: new Date(rescheduleStart).toISOString(),
+          end_time: new Date(rescheduleEnd).toISOString(),
+        }),
+      });
+      setSession(await response.json());
+      setRescheduleMode(false);
+      setError("");
+    } catch (err) {
+      setError(getActionError(err, "Unable to reschedule session"));
+    }
+  };
+
+  const handleCancel = async () => {
+    try {
+      await apiFetch(`/sessions/${sessionId}`, { method: "DELETE" });
+      navigate("/dashboard");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to cancel session");
+    }
+  };
+
   const handleGeneratePlan = async () => {
     if (!session) return;
     const durationMinutes = Math.max(
       1,
-      Math.round((new Date(session.end_time).getTime() - new Date(session.start_time).getTime()) / 60000),
+      Math.round((parseApiDate(session.end_time).getTime() - parseApiDate(session.start_time).getTime()) / 60000),
     );
 
     try {
+      setAiLoading(true);
+      setAiError("");
       const response = await apiFetch(`/sessions/${session.id}/ai-plan`, {
         method: "POST",
         body: JSON.stringify({ duration_minutes: durationMinutes }),
@@ -707,21 +1047,28 @@ function SessionDetailPage() {
       const data: Session = await response.json();
       setSession(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to generate AI plan");
+      setAiError("Couldn't generate this - your session data is safe.");
+    } finally {
+      setAiLoading(false);
     }
   };
 
   const handleSaveNotes = async () => {
     if (!session) return;
     try {
+      setSavingNotes(true);
+      setNotesSaved(false);
       const response = await apiFetch(`/sessions/${session.id}/notes`, {
         method: "PATCH",
         body: JSON.stringify({ notes: notesDraft }),
       });
       const data: Session = await response.json();
       setSession(data);
+      setNotesSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save notes");
+    } finally {
+      setSavingNotes(false);
     }
   };
 
@@ -742,6 +1089,8 @@ function SessionDetailPage() {
   const handleTriggerAiReview = async () => {
     if (!session) return;
     try {
+      setAiLoading(true);
+      setAiError("");
       const response = await apiFetch(`/sessions/${session.id}/trigger-ai-review`, {
         method: "PATCH",
         body: JSON.stringify({}),
@@ -749,7 +1098,9 @@ function SessionDetailPage() {
       const data: Session = await response.json();
       setSession(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to trigger AI review");
+      setAiError("Couldn't generate this - your session data is safe.");
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -757,7 +1108,7 @@ function SessionDetailPage() {
   if (!session) {
     return (
       <AppLayout title="Session detail">
-        <div className="error-banner">{error || "Session not found."}</div>
+        <div className="error-banner" data-testid="error-message">{error || "Session not found."}</div>
       </AppLayout>
     );
   }
@@ -767,32 +1118,53 @@ function SessionDetailPage() {
   const isCompleteReady = notesDraft.trim().length > 0 && homeworkDraft.trim().length > 0;
 
   return (
-    <AppLayout title={getSessionTitle(session)} actions={<button type="button" onClick={() => navigate("/dashboard")}>Back to dashboard</button>}>
-      {error ? <div className="error-banner">{error}</div> : null}
+    <AppLayout title={getSessionPersonLabel(session, "TUTOR", students)} actions={<button type="button" onClick={() => navigate("/dashboard")}>Back to dashboard</button>}>
+      {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
+      {aiError ? <div className="error-banner" data-testid="ai-error">{aiError} <button type="button" className="inline-action" onClick={session.status === "COMPLETED" ? handleTriggerAiReview : handleGeneratePlan}>Try Again</button></div> : null}
       <div className="session-meta">
         <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
-        <span><strong>Time:</strong> {formatDateTime(session.start_time)} → {formatDateTime(session.end_time)}</span>
+        <span><strong>Time:</strong> {formatSessionTime(session)}</span>
       </div>
+      <LifecycleStepper status={session.status} />
 
       {session.status === "SCHEDULED" ? (
         <div className="action-row">
-          <button type="button" onClick={handleGeneratePlan}>Generate AI Plan</button>
-          <button type="button" onClick={handleStart}>Start Session</button>
+          {!session.ai_plan ? <button type="button" onClick={handleGeneratePlan} disabled={aiLoading}>{aiLoading ? "Generating plan..." : "Generate AI Plan"}</button> : null}
+          <button type="button" data-testid="start-btn" onClick={handleStart}>Start Session</button>
+          <button type="button" data-testid="reschedule-btn" onClick={() => setRescheduleMode((value) => !value)}>Reschedule</button>
+          <button type="button" data-testid="cancel-btn" onClick={handleCancel}>Cancel session</button>
         </div>
+      ) : null}
+
+      {session.status === "SCHEDULED" && rescheduleMode ? (
+        <form onSubmit={handleReschedule} className="stacked-form form-card">
+          <label>
+            Start time
+            <input data-testid="reschedule-start-input" type="datetime-local" value={rescheduleStart} onChange={(event) => setRescheduleStart(event.target.value)} required />
+          </label>
+          <label>
+            End time
+            <input data-testid="reschedule-end-input" type="datetime-local" value={rescheduleEnd} onChange={(event) => setRescheduleEnd(event.target.value)} required />
+          </label>
+          <button type="submit" data-testid="reschedule-submit-btn">Save reschedule</button>
+        </form>
       ) : null}
 
       {session.status === "IN_PROGRESS" ? (
         <div className="stacked-form form-card">
           <label>
             Notes
+            <small>Use notes for what you worked on and what to revisit.</small>
             <textarea value={notesDraft} onChange={(e) => setNotesDraft(e.target.value)} rows={6} />
           </label>
           <label>
             Homework
+            <small>Use homework for practice the student should complete next.</small>
             <textarea value={homeworkDraft} onChange={(e) => setHomeworkDraft(e.target.value)} rows={4} />
           </label>
           <div className="action-row">
-            <button type="button" onClick={handleSaveNotes}>Save notes</button>
+            <button type="button" className="secondary-button" onClick={handleSaveNotes} disabled={savingNotes}>{savingNotes ? "Saving..." : "Save notes"}</button>
+            {notesSaved ? <span className="save-state">Saved</span> : null}
             <button type="button" onClick={handleComplete} disabled={!isCompleteReady}>Complete Session</button>
           </div>
         </div>
@@ -811,7 +1183,7 @@ function SessionDetailPage() {
 
       {session.status === "COMPLETED" ? (
         <div className="action-row">
-          <button type="button" onClick={handleTriggerAiReview}>Trigger AI Review</button>
+          <button type="button" onClick={handleTriggerAiReview} disabled={aiLoading}>{aiLoading ? "Generating review..." : "Trigger AI Review"}</button>
         </div>
       ) : null}
 
@@ -823,25 +1195,8 @@ function SessionDetailPage() {
         </div>
       ) : null}
 
-      {session.status === "AI_REVIEWED" && aiSummary ? (
-        <div className="info-block">
-          <h3>AI Summary</h3>
-          <p><strong>Summary:</strong> {aiSummary.summary}</p>
-          <p><strong>Strengths:</strong> {aiSummary.strengths?.join(", ")}</p>
-          <p><strong>Areas to improve:</strong> {aiSummary.areas_to_improve?.join(", ")}</p>
-          <p><strong>Recommended next topic:</strong> {aiSummary.recommended_next_topic}</p>
-        </div>
-      ) : null}
-
-      {aiPlan && typeof aiPlan === "object" ? (
-        <div className="info-block">
-          <h3>AI Plan</h3>
-          <p><strong>Warm up:</strong> {aiPlan.warm_up}</p>
-          <p><strong>Main focus:</strong> {aiPlan.main_focus}</p>
-          <p><strong>Practice activities:</strong> {Array.isArray(aiPlan.practice_activities) ? aiPlan.practice_activities.join("; ") : ""}</p>
-          <p><strong>Check for understanding:</strong> {aiPlan.check_for_understanding}</p>
-        </div>
-      ) : null}
+      {aiPlan ? renderAiContent("AI Plan", session.ai_plan, ["warm_up", "main_focus", "practice_activities", "check_for_understanding"]) : null}
+      {aiSummary ? renderAiContent("AI Summary", session.ai_summary, ["summary", "strengths", "areas_to_improve", "recommended_next_topic"]) : null}
     </AppLayout>
   );
 }
@@ -856,6 +1211,12 @@ export default function App() {
       <Route path="/students/:studentId" element={<ProtectedRoute requiredRole="TUTOR"><StudentDetailPage /></ProtectedRoute>} />
       <Route path="/sessions/new" element={<ProtectedRoute requiredRole="TUTOR"><NewSessionPage /></ProtectedRoute>} />
       <Route path="/sessions/:sessionId" element={<ProtectedRoute requiredRole="TUTOR"><SessionDetailPage /></ProtectedRoute>} />
+
+      <Route path="/student" element={<Navigate to="/student/dashboard" replace />} />
+      <Route path="/student/dashboard" element={<ProtectedRoute requiredRole="STUDENT"><StudentDashboard /></ProtectedRoute>} />
+      <Route path="/student/history" element={<ProtectedRoute requiredRole="STUDENT"><StudentHistoryPage /></ProtectedRoute>} />
+      <Route path="/student/sessions/:sessionId" element={<ProtectedRoute requiredRole="STUDENT"><StudentSessionDetailPage /></ProtectedRoute>} />
+
       <Route path="*" element={<Navigate to={getDashboardPath(parseRoleFromToken(getToken()))} replace />} />
     </Routes>
   );

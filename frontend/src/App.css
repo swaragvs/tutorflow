@@ -181,6 +181,12 @@ button:disabled {
   background: #f8fafc;
 }
 
+.session-card:hover,
+.student-card:hover {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
 .row-between {
   display: flex;
   justify-content: space-between;
@@ -247,6 +253,85 @@ button:disabled {
 .status-ai_reviewed {
   background: #ede9fe;
   color: #6d28d9;
+}
+
+.lifecycle-stepper {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
+  margin: 1rem 0 1.5rem;
+  padding: 1rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.lifecycle-step {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: center;
+  color: #64748b;
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.lifecycle-dot {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 2px solid #cbd5e1;
+  border-radius: 50%;
+  background: white;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.lifecycle-step.done,
+.lifecycle-step.current {
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.lifecycle-step.done .lifecycle-dot,
+.lifecycle-step.current .lifecycle-dot {
+  border-color: #2563eb;
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.empty-state {
+  padding: 1rem;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #475569;
+}
+
+.stacked-form small {
+  color: #64748b;
+  font-weight: 400;
+}
+
+.secondary-button {
+  background: white;
+  color: #1d4ed8;
+  border: 1px solid #93c5fd;
+}
+
+.save-state {
+  align-self: center;
+  color: #166534;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.inline-action {
+  display: inline;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-decoration: underline;
 }
 
 .action-row {
