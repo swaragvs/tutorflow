@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Link,
   Navigate,
@@ -9,43 +9,21 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
+import { BottomPanel } from "./layout/BottomPanel";
+import { SideNav } from "./layout/SideNav";
+import { StatusBar } from "./layout/StatusBar";
+import { TopBar } from "./layout/TopBar";
+import { StatusBadge } from "./components/StatusBadge";
+import { type Role, type Session, type Student } from "./components/SessionCard";
+import { SessionList } from "./components/SessionList";
+import { formatSessionTime, parseSessionDate } from "./utils/formatSessionTime";
 import "./App.css";
 
-type Role = "TUTOR" | "STUDENT";
-type SessionStatus = "SCHEDULED" | "IN_PROGRESS" | "COMPLETED" | "AI_REVIEWED";
-
-type Student = {
-  id: string;
-  user_id: string;
-  tutor_id: string;
-  name?: string | null;
-  email?: string;
-  learning_goals?: string | null;
-  skill_level?: string | null;
-  preferences?: string | null;
-  created_at?: string;
-};
-
-type Session = {
-  id: string;
-  tutor_id: string;
-  student_id: string;
-  start_time: string;
-  end_time: string;
-  status: SessionStatus;
-  notes?: string | null;
-  homework?: string | null;
-  ai_plan?: string | null;
-  ai_summary?: string | null;
-  created_at: string;
-  updated_at: string;
-  student_name?: string | null;
-  tutor_name?: string | null;
-};
+type SessionStatus = Session["status"];
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
-function parseRoleFromToken(token: string | null): Role | null {
+function parseTokenPayload(token: string | null): Record<string, string> | null {
   if (!token) return null;
   try {
     const segments = token.split(".");
@@ -53,10 +31,15 @@ function parseRoleFromToken(token: string | null): Role | null {
     const base64 = segments[1].replace(/-/g, "+").replace(/_/g, "/");
     const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
     const payload = JSON.parse(atob(padded));
-    return payload.role;
+    return payload;
   } catch {
     return null;
   }
+}
+
+function parseRoleFromToken(token: string | null): Role | null {
+  const payload = parseTokenPayload(token);
+  return payload?.role === "TUTOR" || payload?.role === "STUDENT" ? payload.role : null;
 }
 
 function getDashboardPath(role: Role | null) {
@@ -125,43 +108,9 @@ function parseJsonField(raw: string | null | undefined) {
   }
 }
 
-const IST_TIMEZONE = "Asia/Kolkata";
-
-function parseApiDate(value: string) {
-  return new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`);
-}
-
-function formatDateTime(value: string) {
-  const date = parseApiDate(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("en-IN", {
-    timeZone: IST_TIMEZONE,
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(date);
-}
-
 function formatShortId(value: string | null | undefined, fallback = "N/A") {
   if (!value) return fallback;
   return value.slice(0, 8).toUpperCase();
-}
-
-function getSessionPersonLabel(session: Session, role: Role, students: Student[] = []) {
-  if (role === "TUTOR") {
-    const student = students.find((item) => item.user_id === session.student_id);
-    return session.student_name || formatStudentLabel(student);
-  }
-  return session.tutor_name || "Your tutor";
-}
-
-function formatStatusLabel(status: SessionStatus) {
-  const labels: Record<SessionStatus, string> = {
-    SCHEDULED: "Scheduled",
-    IN_PROGRESS: "In Progress",
-    COMPLETED: "Completed",
-    AI_REVIEWED: "AI Reviewed",
-  };
-  return labels[status] ?? status;
 }
 
 function formatStudentLabel(student: Student | null | undefined) {
@@ -169,11 +118,10 @@ function formatStudentLabel(student: Student | null | undefined) {
   return student.name || student.email || `Student ${formatShortId(student.user_id, "Unknown")}`;
 }
 
-function formatSessionTime(session: Session) {
-  const end = parseApiDate(session.end_time);
-  const hasEnded = session.status === "IN_PROGRESS" && end.getTime() < Date.now();
-  if (hasEnded) return `Scheduled end: ${formatDateTime(session.end_time)}`;
-  return `${formatDateTime(session.start_time)} → ${formatDateTime(session.end_time)}`;
+function getSessionPersonLabel(session: Session, role: Role, students: Student[] = []) {
+  if (role === "STUDENT") return session.tutor_name || "Your tutor";
+  const student = students.find((item) => item.user_id === session.student_id);
+  return session.student_name || formatStudentLabel(student);
 }
 
 const lifecycleStatuses: SessionStatus[] = ["SCHEDULED", "IN_PROGRESS", "COMPLETED", "AI_REVIEWED"];
@@ -181,11 +129,11 @@ const lifecycleStatuses: SessionStatus[] = ["SCHEDULED", "IN_PROGRESS", "COMPLET
 function LifecycleStepper({ status }: { status: SessionStatus }) {
   const currentIndex = lifecycleStatuses.indexOf(status);
   return (
-    <div className="lifecycle-stepper" aria-label={`Session lifecycle: ${formatStatusLabel(status)}`}>
+    <div className="lifecycle-stepper" aria-label={`Session lifecycle: ${status}`}>
       {lifecycleStatuses.map((step, index) => (
         <div key={step} className={`lifecycle-step ${index < currentIndex ? "done" : ""} ${index === currentIndex ? "current" : ""}`}>
           <span className="lifecycle-dot">{index < currentIndex ? "✓" : index + 1}</span>
-          <span>{formatStatusLabel(step)}</span>
+          <StatusBadge status={step} />
         </div>
       ))}
     </div>
@@ -214,14 +162,14 @@ function getActionError(error: unknown, fallback: string) {
   if (typed.status !== 409) return error.message || fallback;
   const times = error.message.match(/\d{4}-\d{2}-\d{2}T[^\s,]+/g) ?? [];
   if (times.length >= 2) {
-    return `You already have a session scheduled for ${formatDateTime(times[0] ?? "")} → ${formatDateTime(times[1] ?? "")}. Choose another time.`;
+    return `You already have a session scheduled for ${formatSessionTime(times[0] ?? "", times[1] ?? "")}. Choose another time.`;
   }
   return `You already have a session at the conflicting time. Choose another time.`;
 }
 
 function sortSessions(sessions: Session[]) {
   return [...sessions].sort(
-    (a, b) => parseApiDate(a.start_time).getTime() - parseApiDate(b.start_time).getTime(),
+    (a, b) => parseSessionDate(a.start_time).getTime() - parseSessionDate(b.start_time).getTime(),
   );
 }
 
@@ -241,90 +189,104 @@ function ProtectedRoute({ requiredRole, children }: { requiredRole: Role; childr
   return <>{children}</>;
 }
 
-function AppLayout({ title, children, actions }: { title: string; children: React.ReactNode; actions?: React.ReactNode }) {
+function AppLayout({
+  title,
+  children,
+  actions,
+  bottomPanel,
+}: {
+  title: string;
+  children: React.ReactNode;
+  actions?: React.ReactNode;
+  bottomPanel?: React.ReactNode;
+}) {
   const token = getToken();
   const navigate = useNavigate();
   const role = parseRoleFromToken(token);
+  const tokenPayload = parseTokenPayload(token);
+  const [userLabel, setUserLabel] = useState(tokenPayload?.name || tokenPayload?.email || "Signed in");
+  const [navCollapsed, setNavCollapsed] = useState(false);
+  const [bottomCollapsed, setBottomCollapsed] = useState(false);
+
+  useEffect(() => {
+    if (!token) return;
+    apiFetch("/auth/me")
+      .then((response) => response.json())
+      .then((user: { name?: string | null; email?: string | null }) => {
+        setUserLabel(user.name || user.email || "Signed in");
+      })
+      .catch(() => undefined);
+  }, [token]);
 
   const handleLogout = () => {
     setToken(null);
     navigate("/login");
   };
 
-  const navLinks =
-    role === "STUDENT" ? (
-      <>
-        <Link to="/student/dashboard">Dashboard</Link>
-        <Link to="/student/history">History</Link>
-      </>
-    ) : (
-      <>
-        <Link to="/dashboard">Dashboard</Link>
-        <Link to="/students">Students</Link>
-      </>
-    );
-
   return (
-    <div className="page-shell">
-      <header className="topbar">
-        <div>
-          <Link to={getDashboardPath(role)} className="brand-link">TutorFlow</Link>
-        </div>
-        <nav className="topbar-nav">
-          {navLinks}
-          {token ? (
-            <button type="button" className="ghost-button" onClick={handleLogout}>
-              Logout
-            </button>
-          ) : null}
-        </nav>
-      </header>
-      <main className="content-shell">
-        <div className="panel">
-          <div className="panel-header">
-            <h1>{title}</h1>
-            {actions}
+    <div className="page-shell ide-shell">
+      <TopBar role={role} actions={actions} onMenuToggle={() => setNavCollapsed((value) => !value)} />
+      <div className="ide-body">
+        <SideNav role={role} collapsed={navCollapsed} />
+        <div className="workspace-area">
+          <div className="workspace-grid">
+            <main className="workspace-main">
+              <div className="panel">
+                <div className="panel-header">
+                  <h1>{title}</h1>
+                </div>
+                {children}
+              </div>
+            </main>
           </div>
-          {children}
+          {bottomPanel ? (
+            <BottomPanel collapsed={bottomCollapsed} onToggle={() => setBottomCollapsed((value) => !value)}>
+              {bottomPanel}
+            </BottomPanel>
+          ) : null}
         </div>
-      </main>
+      </div>
+      <StatusBar
+        role={role}
+        userLabel={userLabel}
+        onLogout={handleLogout}
+      />
     </div>
   );
 }
 
 function LoginPage() {
   const navigate = useNavigate();
-  const [showTutorSignup, setShowTutorSignup] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     const token = getToken();
     const currentRole = parseRoleFromToken(token);
-    if (token && currentRole) {
-      navigate(getDashboardPath(currentRole), { replace: true });
-    }
+    if (token && currentRole) navigate(getDashboardPath(currentRole), { replace: true });
   }, [navigate]);
+
+  useEffect(() => {
+    const clearLoginFields = () => {
+      setEmail("");
+      setPassword("");
+    };
+
+    window.addEventListener("pageshow", clearLoginFields);
+    return () => window.removeEventListener("pageshow", clearLoginFields);
+  }, []);
 
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();
     setLoading(true);
     setError("");
-    setMessage("");
-
     try {
-      const response = await apiFetch("/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ email, password }),
-      });
+      const response = await apiFetch("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
       const data = await response.json();
-      const currentRole = parseRoleFromToken(data.access_token);
       setToken(data.access_token);
-      navigate(getDashboardPath(currentRole), { replace: true });
+      navigate(getDashboardPath(parseRoleFromToken(data.access_token)), { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
@@ -332,88 +294,56 @@ function LoginPage() {
     }
   };
 
-  const handleTutorSignup = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setLoading(true);
-    setError("");
-    setMessage("");
-
-    if (password !== confirmPassword) {
-      setError("Passwords do not match.");
-      setLoading(false);
-      return;
-    }
-
-    try {
-      await apiFetch("/auth/register-tutor", {
-        method: "POST",
-        body: JSON.stringify({ email, password }),
-      });
-      setMessage("Tutor account created. You can now sign in.");
-      setShowTutorSignup(false);
-      setEmail("");
-      setPassword("");
-      setConfirmPassword("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Tutor signup failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
-    <div className="auth-page">
-      <div className="auth-card">
-        <h1>TutorFlow</h1>
-        <p>Learning sessions with clear scheduling and AI support</p>
+    <div className="reference-login">
+      <section className="reference-hero" aria-label="TutorFlow overview">
+        <div className="reference-eyebrow"><span className="eyebrow-spark" aria-hidden="true">✦</span> EVERY SESSION, ORGANIZED</div>
+        <h1 className="reference-headline"><span>Where great</span><span>tutoring gets <em>organized.</em></span></h1>
+        <p className="reference-subtext">One place for scheduling, session notes, AI preparation, and student review.</p>
 
-        {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
-        {message ? <div className="success-banner">{message}</div> : null}
+        <div className="reference-illustration" aria-hidden="true">
+          <div className="reference-diamond reference-float">
+            <svg viewBox="0 0 100 100"><polygon points="50,5 95,50 50,60 5,50" fill="var(--accent-yellow)" /><polygon points="50,60 95,50 70,95 30,95" fill="var(--accent-purple)" /></svg>
+          </div>
+          <div className="reference-laptop reference-float" style={{ animationDelay: "0s" }}>
+            <div className="reference-laptop-screen">
+              <div className="reference-laptop-card plan-card"><span className="reference-avatar" /><span className="reference-line" /><span className="reference-line short" /></div>
+              <div className="reference-laptop-card review-card"><span className="reference-avatar alt" /><span className="reference-line dark" /><span className="reference-line dark short" /></div>
+            </div>
+            <div className="reference-laptop-base" />
+          </div>
+          <div className="reference-plant reference-float" style={{ animationDelay: ".2s" }}>
+            <svg viewBox="0 0 130 200">
+              <path d="M65 200 C 40 150, 45 110, 65 80 C 80 120, 75 160, 65 200 Z" fill="#3fae6b" />
+              <path d="M65 200 C 95 160, 100 120, 75 90 C 65 130, 65 165, 65 200 Z" fill="#2f8f56" />
+              <path d="M65 200 C 30 170, 30 140, 55 115 C 60 145, 62 175, 65 200 Z" fill="#4dbf7c" />
+              <rect x="45" y="195" width="40" height="5" fill="var(--navy)" />
+            </svg>
+          </div>
+          <div className="reference-chip chip-plan reference-float" style={{ animationDelay: ".4s" }}><span className="chip-icon">✦</span> AI session plans</div>
+          <div className="reference-stat reference-float" style={{ animationDelay: ".6s" }}><strong>Notes</strong><span>Session record</span></div>
+          <div className="reference-pill reference-float" style={{ animationDelay: ".7s" }}><span aria-hidden="true">●</span> Session in progress</div>
+          <div className="reference-record reference-float" style={{ animationDelay: ".9s" }}><span className="record-avatar" /><span><strong>Session review</strong><small>Notes and homework</small></span></div>
+          <div className="reference-notebook reference-float" style={{ animationDelay: "1.1s" }}><i /><i /><i /><i /></div>
+        </div>
+      </section>
 
-        {showTutorSignup ? (
-          <form onSubmit={handleTutorSignup} className="stacked-form">
-            <label>
-              Tutor email
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-            </label>
-            <label>
-              Password
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            </label>
-            <label>
-              Confirm password
-              <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required />
-            </label>
-            <button type="submit" disabled={loading}>
-              {loading ? "Creating account..." : "Create tutor account"}
-            </button>
-            <button type="button" className="ghost-button" onClick={() => setShowTutorSignup(false)}>
-              Back to login
-            </button>
+      <section className="reference-auth-wrap">
+        <div className="reference-auth-card">
+          <div className="reference-secure-row"><span>◈ TutorFlow workspace</span><span className="reference-sparkle">✦</span></div>
+          <div className="reference-welcome">WELCOME BACK</div>
+          <h2>Sign in to your account</h2>
+          <p className="reference-auth-sub">Continue to your tutoring sessions and student records.</p>
+          {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
+          <form onSubmit={handleLogin} className="reference-form" autoComplete="off">
+            <label htmlFor="login-email">Email</label>
+            <div className="reference-input-wrap"><span aria-hidden="true">✉</span><input id="login-email" type="email" autoComplete="off" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" required /></div>
+            <label htmlFor="login-password">Password</label>
+            <div className="reference-input-wrap"><span aria-hidden="true">▣</span><input id="login-password" type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Your password" required /></div>
+            <button type="submit" className="reference-submit" aria-label="Login" disabled={loading}>{loading ? "Signing in..." : "Sign in to TutorFlow"}</button>
           </form>
-        ) : (
-          <form onSubmit={handleLogin} className="stacked-form">
-            <label>
-              Email
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-            </label>
-            <label>
-              Password
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            </label>
-            <button type="submit" disabled={loading}>
-              {loading ? "Signing in..." : "Login"}
-            </button>
-            <button type="button" className="ghost-button" onClick={() => {
-              setShowTutorSignup(true);
-              setError("");
-              setMessage("");
-            }}>
-              Create tutor account
-            </button>
-          </form>
-        )}
-      </div>
+        </div>
+      </section>
     </div>
   );
 }
@@ -425,58 +355,35 @@ function TutorDashboard() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const load = async () => {
+    let active = true;
+    const load = async (showLoading = false) => {
+      if (showLoading) setLoading(true);
       try {
         const response = await apiFetch("/sessions");
-        const data: Session[] = await response.json();
-        setSessions(sortSessions(data));
+        const nextSessions: Session[] = await response.json();
+        if (active) setSessions(sortSessions(nextSessions));
         const studentsResponse = await apiFetch("/students");
-        setStudents(await studentsResponse.json());
+        if (active) setStudents(await studentsResponse.json());
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Unable to load sessions");
+        if (active) setError(err instanceof Error ? err.message : "Unable to load sessions");
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
-    load();
+    load(true);
+    const refreshTimer = window.setInterval(() => { void load(); }, 20_000);
+    return () => {
+      active = false;
+      window.clearInterval(refreshTimer);
+    };
   }, []);
 
-  const scheduled = useMemo(() => sessions.filter((session) => session.status === "SCHEDULED"), [sessions]);
-  const inProgress = useMemo(() => sessions.filter((session) => session.status === "IN_PROGRESS"), [sessions]);
-
   return (
-    <AppLayout title="Tutor Dashboard" actions={<Link to="/sessions/new" className="primary-link">Schedule Session</Link>}>
+    <AppLayout title="Tutor dashboard" actions={<Link to="/sessions/new" className="primary-link">Schedule Session</Link>}>
       {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
       {loading ? <p>Loading...</p> : null}
-      <div className="section-header">
-        <h2>Scheduled sessions</h2>
-        <Link to="/students">Manage students</Link>
-      </div>
-      {!loading && scheduled.length === 0 ? <p className="empty-state">No scheduled sessions - you&apos;re all caught up.</p> : null}
-      <div className="card-list">
-        {scheduled.map((session) => (
-          <Link key={session.id} to={`/sessions/${session.id}`} className="session-card">
-            <div className="row-between">
-              <strong>{getSessionPersonLabel(session, "TUTOR", students)}</strong>
-              <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
-            </div>
-            <div><strong>Time:</strong> {formatSessionTime(session)}</div>
-          </Link>
-        ))}
-      </div>
-      <div className="section-header"><h2>In-progress sessions</h2></div>
-      {!loading && inProgress.length === 0 ? <p className="empty-state">No sessions are currently in progress.</p> : null}
-      <div className="card-list">
-        {inProgress.map((session) => (
-          <Link key={session.id} to={`/sessions/${session.id}`} className="session-card">
-            <div className="row-between">
-              <strong>{getSessionPersonLabel(session, "TUTOR", students)}</strong>
-              <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
-            </div>
-            <div><strong>Time:</strong> {formatSessionTime(session)}</div>
-          </Link>
-        ))}
-      </div>
+      <div className="section-header"><h2>Sessions</h2><Link to="/students">Manage students</Link></div>
+      {!loading ? <SessionList sessions={sessions} role="TUTOR" students={students} emptyMessage="No sessions yet." /> : null}
     </AppLayout>
   );
 }
@@ -675,18 +582,7 @@ function StudentDetailPage() {
       )}
 
       <h2>Session history</h2>
-      {sessions.length === 0 ? <p>No sessions.</p> : null}
-      <div className="card-list">
-        {sessions.map((session) => (
-          <Link key={session.id} to={`/sessions/${session.id}`} className="session-card">
-            <div className="row-between">
-              <strong>{getSessionPersonLabel(session, "TUTOR", [student])}</strong>
-              <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
-            </div>
-            <div><strong>Time:</strong> {formatSessionTime(session)}</div>
-          </Link>
-        ))}
-      </div>
+      <SessionList sessions={sessions} role="TUTOR" students={[student]} emptyMessage="No sessions yet." />
     </AppLayout>
   );
 }
@@ -778,53 +674,33 @@ function StudentDashboard() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const load = async () => {
+    let active = true;
+    const load = async (showLoading = false) => {
+      if (showLoading) setLoading(true);
       try {
         const response = await apiFetch("/sessions");
         const data: Session[] = await response.json();
-        setSessions(sortSessions(data));
+        if (active) setSessions(sortSessions(data));
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Unable to load your sessions");
+        if (active) setError(err instanceof Error ? err.message : "Unable to load your sessions");
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
-    load();
+    load(true);
+    const refreshTimer = window.setInterval(() => { void load(); }, 20_000);
+    return () => {
+      active = false;
+      window.clearInterval(refreshTimer);
+    };
   }, []);
 
-  const scheduled = useMemo(() => sessions.filter((session) => session.status === "SCHEDULED"), [sessions]);
-  const inProgress = useMemo(() => sessions.filter((session) => session.status === "IN_PROGRESS"), [sessions]);
-
   return (
-    <AppLayout title="Student Dashboard">
+    <AppLayout title="Student dashboard">
       {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
       {loading ? <p>Loading...</p> : null}
-      {!loading && scheduled.length === 0 && inProgress.length === 0 ? <p className="empty-state">No upcoming sessions - you&apos;re all caught up.</p> : null}
-      {scheduled.length > 0 ? <h2>Scheduled sessions</h2> : null}
-      <div className="card-list">
-        {scheduled.map((session) => (
-          <Link key={session.id} to={`/student/sessions/${session.id}`} className="session-card">
-            <div className="row-between">
-              <strong>{getSessionPersonLabel(session, "STUDENT")}</strong>
-              <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
-            </div>
-            <div><strong>Time:</strong> {formatSessionTime(session)}</div>
-          </Link>
-        ))}
-      </div>
-      {inProgress.length > 0 ? <h2>In-progress sessions</h2> : null}
-      <div className="card-list">
-        {inProgress.map((session) => (
-          <Link key={session.id} to={`/student/sessions/${session.id}`} className="session-card">
-            <div className="row-between">
-              <strong>{getSessionPersonLabel(session, "STUDENT")}</strong>
-              <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
-            </div>
-            <div><strong>Time:</strong> {formatSessionTime(session)}</div>
-          </Link>
-        ))}
-      </div>
+      {!loading ? <SessionList sessions={sessions} role="STUDENT" emptyMessage="No sessions yet." /> : null}
     </AppLayout>
   );
 }
@@ -839,11 +715,7 @@ function StudentHistoryPage() {
       try {
         const response = await apiFetch("/sessions");
         const data: Session[] = await response.json();
-        setSessions(
-          sortSessions(
-            data.filter((session) => session.status === "COMPLETED" || session.status === "AI_REVIEWED"),
-          ),
-        );
+        setSessions(sortSessions(data));
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unable to load your history");
       } finally {
@@ -855,21 +727,10 @@ function StudentHistoryPage() {
   }, []);
 
   return (
-    <AppLayout title="Session History">
+    <AppLayout title="Session history">
       {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
       {loading ? <p>Loading...</p> : null}
-      {!loading && sessions.length === 0 ? <p>No past sessions yet.</p> : null}
-      <div className="card-list">
-        {sessions.map((session) => (
-          <Link key={session.id} to={`/student/sessions/${session.id}`} className="session-card">
-            <div className="row-between">
-              <strong>{getSessionPersonLabel(session, "STUDENT")}</strong>
-              <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
-            </div>
-            <div><strong>Time:</strong> {formatSessionTime(session)}</div>
-          </Link>
-        ))}
-      </div>
+      {!loading ? <SessionList sessions={sessions} role="STUDENT" emptyMessage="No sessions yet." /> : null}
     </AppLayout>
   );
 }
@@ -917,31 +778,38 @@ function StudentSessionDetailPage() {
   const aiSummary = parseJsonField(session.ai_summary);
 
   return (
-    <AppLayout title={getSessionPersonLabel(session, "STUDENT")} actions={<Link to="/student/dashboard" className="primary-link">Back to dashboard</Link>}>
+    <AppLayout
+      title={getSessionPersonLabel(session, "STUDENT")}
+      actions={<Link to="/student/dashboard" className="primary-link">Back to dashboard</Link>}
+      bottomPanel={
+        <div className="detail-bottom-grid">
+          <div className="stacked-form">
+            <label>
+              Notes
+              <small>Notes capture what you worked on and what to revisit.</small>
+              <textarea value={session.notes ?? ""} readOnly rows={5} />
+            </label>
+            <label>
+              Homework
+              <small>Homework records practice to complete before the next session.</small>
+              <textarea value={session.homework ?? ""} readOnly rows={4} />
+            </label>
+          </div>
+          <div>
+            {session.ai_plan ? renderAiContent("AI Plan", session.ai_plan, ["warm_up", "main_focus", "practice_activities", "check_for_understanding"]) : null}
+            {session.ai_summary && aiSummary ? renderAiContent("AI Summary", session.ai_summary, ["summary", "strengths", "areas_to_improve", "recommended_next_topic"]) : null}
+          </div>
+        </div>
+      }
+    >
       <div className="session-meta">
-        <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
-        <span><strong>Time:</strong> {formatSessionTime(session)}</span>
+        <StatusBadge status={session.status} />
+        <span><span className="sr-only">Time:</span><strong>Session time:</strong> {formatSessionTime(session.start_time, session.end_time, session.status)}</span>
       </div>
       <LifecycleStepper status={session.status} />
 
-      <div className="stacked-form form-card">
-        <label>
-          Notes
-          <small>Notes capture what you worked on and what to revisit.</small>
-          <textarea value={session.notes ?? ""} readOnly rows={6} />
-        </label>
-        <label>
-          Homework
-          <small>Homework records practice to complete before the next session.</small>
-          <textarea value={session.homework ?? ""} readOnly rows={4} />
-        </label>
-      </div>
-
-      {session.ai_plan ? renderAiContent("AI Plan", session.ai_plan, ["warm_up", "main_focus", "practice_activities", "check_for_understanding"]) : null}
-      {session.ai_summary && aiSummary ? renderAiContent("AI Summary", session.ai_summary, ["summary", "strengths", "areas_to_improve", "recommended_next_topic"]) : null}
-
       {!session.notes && !session.homework && session.status !== "AI_REVIEWED" ? (
-        <p>No notes or homework are available for this session yet.</p>
+        <p className="panel-empty">No notes or homework are available for this session yet. Open the bottom panel to review the session workspace.</p>
       ) : null}
     </AppLayout>
   );
@@ -1034,7 +902,7 @@ function SessionDetailPage() {
     if (!session) return;
     const durationMinutes = Math.max(
       1,
-      Math.round((parseApiDate(session.end_time).getTime() - parseApiDate(session.start_time).getTime()) / 60000),
+      Math.round((parseSessionDate(session.end_time).getTime() - parseSessionDate(session.start_time).getTime()) / 60000),
     );
 
     try {
@@ -1116,14 +984,56 @@ function SessionDetailPage() {
   const aiPlan = parseJsonField(session.ai_plan);
   const aiSummary = parseJsonField(session.ai_summary);
   const isCompleteReady = notesDraft.trim().length > 0 && homeworkDraft.trim().length > 0;
+  const sessionBottomPanel = (
+    <div className="detail-bottom-grid">
+      {session.status === "IN_PROGRESS" ? (
+        <div className="stacked-form">
+          <label>
+            Notes
+            <small>Use notes for what you worked on and what to revisit.</small>
+            <textarea value={notesDraft} onChange={(e) => setNotesDraft(e.target.value)} rows={5} />
+          </label>
+          <label>
+            Homework
+            <small>Use homework for practice the student should complete next.</small>
+            <textarea value={homeworkDraft} onChange={(e) => setHomeworkDraft(e.target.value)} rows={4} />
+          </label>
+          <div className="action-row">
+            <button type="button" className="secondary-button" onClick={handleSaveNotes} disabled={savingNotes}>{savingNotes ? "Saving..." : "Save notes"}</button>
+            {notesSaved ? <span className="save-state">Saved</span> : null}
+            <button type="button" onClick={handleComplete} disabled={!isCompleteReady}>Complete Session</button>
+          </div>
+        </div>
+      ) : (
+        <div className="stacked-form">
+          <label>
+            Notes
+            <textarea value={notesDraft} readOnly rows={5} />
+          </label>
+          <label>
+            Homework
+            <textarea value={homeworkDraft} readOnly rows={4} />
+          </label>
+        </div>
+      )}
+      <div>
+        {aiPlan ? renderAiContent("AI Plan", session.ai_plan, ["warm_up", "main_focus", "practice_activities", "check_for_understanding"]) : null}
+        {aiSummary ? renderAiContent("AI Summary", session.ai_summary, ["summary", "strengths", "areas_to_improve", "recommended_next_topic"]) : null}
+      </div>
+    </div>
+  );
 
   return (
-    <AppLayout title={getSessionPersonLabel(session, "TUTOR", students)} actions={<button type="button" onClick={() => navigate("/dashboard")}>Back to dashboard</button>}>
+    <AppLayout
+      title={getSessionPersonLabel(session, "TUTOR", students)}
+      actions={<button type="button" onClick={() => navigate("/dashboard")}>Back to dashboard</button>}
+      bottomPanel={sessionBottomPanel}
+    >
       {error ? <div className="error-banner" data-testid="error-message">{error}</div> : null}
       {aiError ? <div className="error-banner" data-testid="ai-error">{aiError} <button type="button" className="inline-action" onClick={session.status === "COMPLETED" ? handleTriggerAiReview : handleGeneratePlan}>Try Again</button></div> : null}
       <div className="session-meta">
-        <span className={`status-badge status-${session.status.toLowerCase()}`}>{formatStatusLabel(session.status)}</span>
-        <span><strong>Time:</strong> {formatSessionTime(session)}</span>
+        <StatusBadge status={session.status} />
+        <span><span className="sr-only">Time:</span><strong>Session time:</strong> {formatSessionTime(session.start_time, session.end_time, session.status)}</span>
       </div>
       <LifecycleStepper status={session.status} />
 
@@ -1150,37 +1060,6 @@ function SessionDetailPage() {
         </form>
       ) : null}
 
-      {session.status === "IN_PROGRESS" ? (
-        <div className="stacked-form form-card">
-          <label>
-            Notes
-            <small>Use notes for what you worked on and what to revisit.</small>
-            <textarea value={notesDraft} onChange={(e) => setNotesDraft(e.target.value)} rows={6} />
-          </label>
-          <label>
-            Homework
-            <small>Use homework for practice the student should complete next.</small>
-            <textarea value={homeworkDraft} onChange={(e) => setHomeworkDraft(e.target.value)} rows={4} />
-          </label>
-          <div className="action-row">
-            <button type="button" className="secondary-button" onClick={handleSaveNotes} disabled={savingNotes}>{savingNotes ? "Saving..." : "Save notes"}</button>
-            {notesSaved ? <span className="save-state">Saved</span> : null}
-            <button type="button" onClick={handleComplete} disabled={!isCompleteReady}>Complete Session</button>
-          </div>
-        </div>
-      ) : (
-        <div className="stacked-form form-card">
-          <label>
-            Notes
-            <textarea value={notesDraft} readOnly rows={6} />
-          </label>
-          <label>
-            Homework
-            <textarea value={homeworkDraft} readOnly rows={4} />
-          </label>
-        </div>
-      )}
-
       {session.status === "COMPLETED" ? (
         <div className="action-row">
           <button type="button" onClick={handleTriggerAiReview} disabled={aiLoading}>{aiLoading ? "Generating review..." : "Trigger AI Review"}</button>
@@ -1195,8 +1074,6 @@ function SessionDetailPage() {
         </div>
       ) : null}
 
-      {aiPlan ? renderAiContent("AI Plan", session.ai_plan, ["warm_up", "main_focus", "practice_activities", "check_for_understanding"]) : null}
-      {aiSummary ? renderAiContent("AI Summary", session.ai_summary, ["summary", "strengths", "areas_to_improve", "recommended_next_topic"]) : null}
     </AppLayout>
   );
 }
