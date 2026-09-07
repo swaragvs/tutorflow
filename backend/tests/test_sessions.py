@@ -521,6 +521,42 @@ class TestSessionSchedulingUpdates:
 
         assert response.status_code == 409
 
+    def test_delete_in_progress_session_rejected_by_api(self, client, db):
+        """The API rejects deletion of an active session independently of the UI."""
+        tutor = User(
+            name="Tutor One",
+            email="delete-active-tutor@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        student = User(
+            name="Student One",
+            email="delete-active-student@example.com",
+            password_hash=hash_password("StudentPass123"),
+            role=RoleEnum.STUDENT,
+        )
+        db.add_all([tutor, student])
+        db.commit()
+        db.add(StudentProfile(user_id=student.id, tutor_id=tutor.id))
+        start = datetime.utcnow() - timedelta(minutes=5)
+        session = SessionModel(
+            tutor_id=tutor.id,
+            student_id=student.id,
+            start_time=start,
+            end_time=start + timedelta(hours=1),
+            status="IN_PROGRESS",
+        )
+        db.add(session)
+        db.commit()
+
+        token = create_access_token({"sub": str(tutor.id), "role": tutor.role.value})
+        response = client.delete(
+            f"/sessions/{session.id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 409
+
     def test_start_session_too_early_409(self, client, db):
         tutor = User(
             name="Tutor One",

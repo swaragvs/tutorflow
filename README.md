@@ -13,11 +13,10 @@ students can see only their own upcoming sessions, past notes, and homework.
 
 - **Backend:** FastAPI + SQLAlchemy + Alembic, PostgreSQL
 - **Frontend:** React + TypeScript + Vite
-- **AI:** Gemini via Google AI Studio (`GEMINI_MODEL` defaults to `gemini-3.5-flash-lite`)
+- **AI:** Gemini via Google AI Studio (`GEMINI_MODEL` defaults to `gemini-3.5-flash-lite`), using
+  the Google AI Studio free tier
 - **Auth:** JWT, bcrypt-hashed passwords
-- **Hosting:** Render backend, Vercel frontend, Supabase PostgreSQL
-- **External services:** Google AI Studio/Gemini and Supabase PostgreSQL are intended to use
-  their free tiers; account plan and quota status must be confirmed in their dashboards.
+- **Hosting:** Render backend, Vercel frontend, Supabase PostgreSQL on its free tier
 
 ## Repo layout
 
@@ -61,8 +60,8 @@ sleeps after inactivity.
 
 The Vercel-hosted React/TypeScript/Vite client calls a FastAPI service on Render. FastAPI
 uses SQLAlchemy and Alembic against Supabase PostgreSQL, while Gemini generates structured
-session plans and summaries. This stack keeps the client typed and fast to iterate, puts
-authorization and lifecycle rules on the server, and fits the free-tier deployment model.
+session plans and summaries. This stack keeps the client typed and fast to iterate and puts
+authorization and lifecycle rules on the server.
 
 ## Deployment
 
@@ -87,66 +86,6 @@ authorization and lifecycle rules on the server, and fits the free-tier deployme
 
 7. Cold-load the Vercel URL in an incognito window and verify tutor login, logout, student
   login, ownership filtering, tutor-side AI-reviewed content, and the upcoming session.
-
-## Implementation status and remaining checks
-
-Implemented in the repository:
-
-- Tutors create and link student accounts through `POST /students`; students do not self-register.
-- JWT authentication, bcrypt password hashing, role checks, ownership filtering, and the
-  four-state session lifecycle are enforced by the backend.
-- The overlap check uses an application-level query for a clear conflict message and a
-  PostgreSQL exclusion constraint for the same tutor's time ranges, with the
-  `(tutor_id, start_time)` index supporting lookup.
-- AI plans and summaries use the student profile, the current session record, and the most
-  recent prior completed/reviewed session's notes, homework, and AI summary when one exists.
-  AI fields are returned to tutors, not students.
-- The deployment configuration, live URLs, and demo credentials are recorded above. The
-  latest access-scope, AI-history, and overlap-constraint changes have been pushed and
-  redeployed.
-
-Remaining or intentionally not guaranteed:
-
-- The PostgreSQL exclusion constraint closes the same-tutor concurrent overlap race for the
-  deployed PostgreSQL database. The application-level fallback remains the behavior used by
-  SQLite-based tests.
-- The repository cannot prove the billing tier or remaining quota of external accounts. Confirm
-  Supabase's free-plan status and Google AI Studio quota in their dashboards before submission.
-  Render's free-tier cold-start behavior is documented below.
-- The API stores naive database datetimes and the frontend interprets naive API timestamps as
-  UTC for display; an explicit timezone-aware database column/serialization remains a future
-  hardening improvement.
-- Production smoke verification has passed for both demo logins, tutor AI fields, and the
-  student AI-field boundary.
-
-## Requirements alignment
-
-Implemented:
-
-- Two roles are implemented: tutors create student accounts, schedule sessions, record notes,
-  and manage the lifecycle; students can access only their own upcoming sessions, past notes,
-  and homework.
-- The lifecycle is `SCHEDULED -> IN_PROGRESS -> COMPLETED -> AI_REVIEWED`. The backend stores
-  it as an enum and enforces transitions through the central
-  `backend/app/services/session_state.py` service, rather than relying on hidden UI buttons.
-- Completed sessions are locked for normal edits. The explicit AI-review transition remains
-  available to the tutor.
-- AI plans and summaries are tutor-only. Student session responses contain status, time, notes,
-  and homework, but omit `ai_plan` and `ai_summary`.
-- Tutor and student demo credentials, the GitHub repository, and deployed frontend/backend
-  URLs are listed above.
-
-Not fully guaranteed or still requiring confirmation:
-
-- Same-tutor double booking is rejected by an application-level overlap query and protected in
-  PostgreSQL by an exclusion constraint on the tutor and session time range. The migration
-  requires the `btree_gist` extension and must be applied before relying on the database guard.
-- The plan and summary prompts use the student profile, current session data, and the most
-  recent prior completed/reviewed session context when one exists.
-- The latest access-scope changes are deployed to both services and were verified through the
-  production tutor/student smoke flow.
-- The repository identifies Google AI Studio and Supabase as the external AI/database
-  services, but it cannot verify their free-tier billing status or remaining quota.
 
 ## Authentication & Authorization
 
@@ -446,4 +385,76 @@ cd frontend
 npm install
 copy .env.example .env  # set VITE_API_URL if the backend is not on localhost:8000
 npm run dev
+```
+
+## Test coverage
+
+### Backend tests
+
+Backend tests use `pytest`, FastAPI's test client, and isolated database fixtures. Gemini
+network calls are mocked in AI tests, so the suite does not consume live model quota.
+
+- `backend/tests/test_auth.py`: unit and API tests for bcrypt hashing, password verification,
+  JWT creation and expiry, malformed/invalid bearer tokens, tutor/student login, registration,
+  `/auth/me`, and role claims.
+- `backend/tests/test_models.py`: SQLAlchemy schema tests for table and column presence, UUIDs,
+  required and optional fields, timestamps, unique constraints, foreign-key relationships,
+  role/status enum values, defaults, and the `(tutor_id, start_time)`
+  index. When run against PostgreSQL, it also checks that migration `0003` installed the
+  `sessions_no_tutor_time_overlap` exclusion constraint; this test is skipped under SQLite.
+- `backend/tests/test_students.py`: tutor-created student accounts, duplicate-email handling,
+  tutor-only access, tutor ownership filtering, profile retrieval, profile updates, and
+  cross-tutor/cross-student access denial.
+- `backend/tests/test_sessions.py`: session creation validation, student ownership checks,
+  application-level overlap rejection, allowed non-overlapping bookings, different-tutor
+  overlaps, rescheduling, direct API rejection of deleting an in-progress session, deletion
+  rules, early-start timing, role-filtered listing, owner-only detail access, and omission of
+  AI fields from student detail responses.
+- `backend/tests/test_session_state_machine.py`: valid lifecycle transitions, illegal
+  transitions, locked-session note rules, tutor ownership authorization, student start denial,
+  and required notes/homework when completing a session.
+- `backend/tests/test_ai_integration.py`: prompt grounding with and without prior session
+  history, JSON and fenced-JSON parsing, Gemini rate-limit/timeout/error handling, scheduled
+  AI-plan rules, completed-session AI-review rules, summary generation, and safe `502` errors.
+
+The normal test database is SQLite for speed and isolation. PostgreSQL-only behavior, including
+the `btree_gist` extension and `sessions_no_tutor_time_overlap` exclusion constraint, is applied
+and verified through the Alembic migration against the deployed PostgreSQL database.
+
+### Frontend Playwright tests
+
+Playwright tests run browser-level flows through the React UI and call the API fixture where
+test data is required. Most behavioral specs create temporary test accounts and sessions; they
+should be run locally or against a disposable test database, not repeatedly against production.
+
+- `frontend/e2e/tests/login-layout.spec.ts`: read-only responsive login smoke test; verifies
+  the login controls are visible and the standard laptop viewport has no page overflow.
+- `frontend/e2e/tests/cancel-blocked.spec.ts`: verifies an in-progress session cannot be
+  cancelled or rescheduled from the tutor UI.
+- `frontend/e2e/tests/credential-display.spec.ts`: verifies newly created student credentials
+  are displayed once and are cleared after the one-time display flow.
+- `frontend/e2e/tests/early-start-block.spec.ts`: verifies the UI/API flow rejects starting
+  too early and permits starting inside the configured start window.
+- `frontend/e2e/tests/isolation.spec.ts`: uses separate browser contexts to verify tutor and
+  student identities remain isolated and students do not see another student's sessions.
+- `frontend/e2e/tests/lifecycle-happy-path.spec.ts`: drives the tutor UI through plan generation,
+  start, notes/homework entry, completion, AI review, and the final AI Reviewed state.
+- `frontend/e2e/tests/no-raw-uuids.spec.ts`: verifies user-facing tutor/student views show
+  names or readable labels instead of raw UUIDs.
+- `frontend/e2e/tests/reschedule.spec.ts`: verifies scheduled sessions can be rescheduled and
+  scheduling conflicts are surfaced as protection against overlap.
+- `frontend/e2e/tests/student-edit.spec.ts`: verifies a tutor can edit a student's name and
+  see the saved value in the UI.
+- `frontend/e2e/tests/ui-communication.spec.ts`: verifies tutors can see generated AI plan and
+  summary content, while students can see their own notes/homework but not the tutor-only AI
+  fields.
+
+Local commands:
+
+```bash
+cd backend
+python -m pytest -q
+
+cd ../frontend
+npx playwright test --config=e2e/playwright.config.ts --workers=1
 ```

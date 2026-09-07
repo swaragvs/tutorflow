@@ -6,7 +6,7 @@ test("separate browser contexts keep identities isolated", async ({ browser, req
   const tutorToken = await login(request, tutor);
   const student1 = await createStudent(request, tutorToken, { name: "Student One" });
   const student2 = await createStudent(request, tutorToken, { name: "Student Two" });
-  const start = new Date(Date.now() + 5 * 60 * 1000);
+  const start = new Date(Date.now() - 5 * 60 * 1000);
   const session1 = await createSession(request, tutorToken, student1.user_id, start, new Date(start.getTime() + 30 * 60 * 1000));
   const session2 = await createSession(request, tutorToken, student2.user_id, new Date(start.getTime() + 60 * 60 * 1000), new Date(start.getTime() + 90 * 60 * 1000));
 
@@ -37,6 +37,7 @@ test("separate browser contexts keep identities isolated", async ({ browser, req
   await tutorPage.getByTestId("start-btn").click();
   await expect(tutorPage.locator(".status-in_progress")).toContainText("In Progress");
   await student1Page.goto("/student/dashboard");
+  await student1Page.reload();
   await expect(student1Page.locator("body")).toContainText("In Progress");
   await expect(student1Page.locator("body")).not.toContainText("Student Two");
   await student2Page.goto("/student/dashboard");

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from app.models import User, StudentProfile, Session as SessionModel
@@ -635,3 +635,22 @@ class TestIndexes:
             for idx in indexes
         )
         assert has_overlap_index or len(indexes) > 0  # At least some indexes exist
+
+    def test_postgres_session_overlap_exclusion_constraint(self, test_engine):
+        """PostgreSQL installs the concurrency-safe same-tutor overlap guard."""
+        if test_engine.dialect.name != "postgresql":
+            pytest.skip("PostgreSQL migration constraint is not available in SQLite tests")
+
+        with test_engine.connect() as connection:
+            constraint = connection.execute(
+                text(
+                    """
+                    SELECT conname
+                    FROM pg_constraint
+                    WHERE conrelid = 'sessions'::regclass
+                      AND conname = 'sessions_no_tutor_time_overlap'
+                    """
+                )
+            ).scalar_one_or_none()
+
+        assert constraint == "sessions_no_tutor_time_overlap"
