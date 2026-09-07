@@ -5,8 +5,9 @@ strictly server-enforced session lifecycle (`Scheduled` → `In Progress` → `C
 `AI Reviewed`), and AI-generated session plans/summaries grounded in each student's real
 profile and history.
 
-Built for a take-home task with a 100-point rubric weighted toward data modelling, AI
-prompt quality, and server-side rule enforcement over frontend polish.
+TutorFlow is a focused workspace for 1:1 tutors to schedule sessions, record notes and
+homework, and review AI-generated preparation and summaries. Tutors manage the lifecycle;
+students can see their own sessions and read the resulting learning record.
 
 ## Stack
 
@@ -14,7 +15,7 @@ prompt quality, and server-side rule enforcement over frontend polish.
 - **Frontend:** React + TypeScript + Vite
 - **AI:** Gemini 2.5 Flash-Lite (Google AI Studio, free tier)
 - **Auth:** JWT, bcrypt-hashed passwords
-- **Hosting:** Render (backend web service + frontend static site), DB on Supabase/Neon
+- **Hosting:** Render backend, Vercel frontend, Supabase PostgreSQL
 
 ## Repo layout
 
@@ -43,11 +44,47 @@ cp .env.example .env   # set VITE_API_URL if backend isn't on localhost:8000
 npm run dev
 ```
 
-## Live deployment
+## Live URL, GitHub, and demo credentials
 
-- **URL:** _add once deployed_
-- **GitHub:** _this repo_
-- **Test credentials:** _add tutor and student test logins here before submission_
+- **Frontend:** _add the Vercel URL after deployment_
+- **Backend:** _add the Render URL after deployment_
+- **GitHub:** https://github.com/swaragvs/tutorflow
+- **Tutor:** `demo.tutor@tutorflow.dev` / _add the seeded password_
+- **Student:** `demo.student@tutorflow.dev` / _add the seeded password_
+
+The first backend request may take up to a minute because the free-tier Render service
+sleeps after inactivity.
+
+## Architecture
+
+The Vercel-hosted React/TypeScript/Vite client calls a FastAPI service on Render. FastAPI
+uses SQLAlchemy and Alembic against Supabase PostgreSQL, while Gemini generates structured
+session plans and summaries. This stack keeps the client typed and fast to iterate, puts
+authorization and lifecycle rules on the server, and fits the free-tier deployment model.
+
+## Deployment
+
+1. Create a Supabase project and set its PostgreSQL connection string as `DATABASE_URL`.
+2. Connect the GitHub repository to Render as a web service with root directory `backend/`.
+  The checked-in `render.yaml` contains the build, start, health-check, and secret-variable
+  declarations. Set `DATABASE_URL`, `JWT_SECRET`, `GEMINI_API_KEY`, and other values in the
+  Render dashboard; never commit them.
+3. Run `alembic upgrade head` from `backend/` against the production database.
+4. Import `frontend/` into Vercel as a Vite project and set `VITE_API_URL` to the Render URL.
+5. Set Render's `CORS_ORIGINS` to the exact Vercel origin, then redeploy the backend.
+6. Seed the production API once, after migrations, with:
+
+  ```bash
+  cd backend
+  python scripts/seed_demo.py --base-url https://your-render-service.onrender.com
+  ```
+
+  Set `DEMO_TUTOR_PASSWORD` and `DEMO_STUDENT_PASSWORD` in the shell before running it.
+  The script creates exactly one tutor, one student, one AI-reviewed session, and one
+  upcoming scheduled session, then prints the credentials and session IDs.
+
+7. Cold-load the Vercel URL in an incognito window and verify tutor login, logout, student
+  login, ownership filtering, AI-reviewed content, and the upcoming session.
 
 ## Authentication & Authorization
 
@@ -136,7 +173,7 @@ SCHEDULED → IN_PROGRESS → COMPLETED → AI_REVIEWED
 | POST | `/sessions/{id}/ai-plan` | Tutor | Generate AI plan for SCHEDULED session |
 | PATCH | `/sessions/{id}/trigger-ai-review` | Tutor | Call AI service, generate summary, transition COMPLETED → AI_REVIEWED |
 
-## AI Integration (Phase 5)
+## AI Integration
 
 TutorFlow uses **Gemini 2.5 Flash-Lite** to generate context-aware session plans and summaries grounded in real student data.
 
@@ -181,16 +218,16 @@ Generates a structured lesson plan based on:
 ```
 You are an assistant helping a tutor prepare for a 1:1 session.
 
-Student: {student_name}, level: {skill_level}
-Learning goals: {learning_goals}
-Preferences: {preferences}
+Student: {student_profile.user_id}, level: {student_profile.skill_level or "(not specified)"}
+Learning goals: {student_profile.learning_goals or "(not specified)"}
+Preferences: {student_profile.preferences or "(not specified)"}
 
 Most recent prior session (if any):
 - Notes: {previous_notes}
 - Homework assigned: {previous_homework}
 - AI summary of that session: {previous_ai_summary}
 
-Today's session: subject/duration as given by tutor: {duration_minutes} minutes.
+Today's session: duration: {duration_minutes or "unknown"} minutes.
 
 Produce a session plan as JSON with keys: 
   "warm_up" (string), "main_focus" (string, tied to a specific weakness above if one exists), 
@@ -240,9 +277,9 @@ Generates a structured summary for the student's record based on:
 ```
 You are summarizing a completed 1:1 tutoring session for the student's ongoing record.
 
-Student: {student_name}, level: {skill_level}, goals: {learning_goals}
-This session's tutor notes: {notes}
-Homework assigned: {homework}
+Student: {student_profile.user_id}, level: {student_profile.skill_level or "(not specified)"}, goals: {student_profile.learning_goals or "(not specified)"}
+This session's tutor notes: {session.notes or "(no notes recorded)"}
+Homework assigned: {session.homework or "(no homework assigned)"}
 
 Produce JSON with keys:
   "summary" (2-3 sentences, plain language, written for the student to read),
@@ -262,6 +299,10 @@ not mentioned. Return JSON only, no prose outside the JSON object.
 All errors are logged for debugging. Sessions remain in their current state if AI call fails.
 
 ## Database Schema
+
+The status field is a native PostgreSQL enum so invalid lifecycle states cannot enter the
+database accidentally. The `(tutor_id, start_time)` index supports the overlap query used
+when a tutor schedules or reschedules a session, keeping that check efficient as data grows.
 
 ### Users
 - `id` (UUID, primary key)
@@ -295,3 +336,32 @@ All errors are logged for debugging. Sessions remain in their current state if A
 - **Index**: `(tutor_id, start_time)` for overlap checking
 
 ## Known limitations
+
+- The overlap check has a theoretical race-condition window between checking and inserting;
+  database-level locking was outside this project's scope.
+- The free-tier Render backend may sleep after inactivity; the first load may take up to a
+  minute while the service wakes.
+- There is no admin role, live video/audio, or chat. These were deliberately scoped out.
+- Tutor registration does not currently collect a display name, so tutor-facing labels may
+  fall back to the account email or a placeholder.
+
+## How to run locally
+
+```bash
+cd backend
+python -m venv venv
+venv\Scripts\activate  # Windows; use source venv/bin/activate on macOS/Linux
+pip install -r requirements.txt
+copy .env.example .env  # fill in DATABASE_URL, JWT_SECRET, and GEMINI_API_KEY
+alembic upgrade head
+uvicorn app.main:app --reload
+```
+
+In another terminal:
+
+```bash
+cd frontend
+npm install
+copy .env.example .env  # set VITE_API_URL if the backend is not on localhost:8000
+npm run dev
+```
