@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { StatusBadge, type SessionStatus } from "./StatusBadge";
+import { getStudentVisibleStatus, StatusBadge, type SessionStatus } from "./StatusBadge";
 import { formatSessionTime } from "../utils/formatSessionTime";
 
 export type Role = "TUTOR" | "STUDENT";
@@ -53,7 +53,7 @@ export function SessionCard({ session, role, students = [], actions }: SessionCa
       <Link to={href} className="session-card-link">
         <div className="row-between">
           <strong>{counterpartName(session, role, students)}</strong>
-          <StatusBadge status={session.status} />
+          <StatusBadge status={role === "STUDENT" ? getStudentVisibleStatus(session.status) : session.status} />
         </div>
         <div><strong>Session time:</strong> {formatSessionTime(session.start_time, session.end_time, session.status)}</div>
       </Link>

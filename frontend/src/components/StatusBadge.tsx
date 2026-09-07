@@ -14,6 +14,10 @@ const labels: Record<SessionStatus, string> = {
   AI_REVIEWED: "AI Reviewed",
 };
 
+export function getStudentVisibleStatus(status: SessionStatus): Exclude<SessionStatus, "AI_REVIEWED"> {
+  return status === "AI_REVIEWED" ? "COMPLETED" : status;
+}
+
 export function StatusBadge({ status, children }: StatusBadgeProps) {
   return (
     <span className={`status-badge status-${status.toLowerCase()}`}>

@@ -883,6 +883,10 @@ button:disabled {
   background: var(--surface-muted);
 }
 
+.student-lifecycle-stepper {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .lifecycle-step {
   display: grid;
   gap: 0.35rem;
@@ -1560,6 +1564,10 @@ button:disabled {
   .lifecycle-stepper {
     grid-template-columns: repeat(2, 1fr);
   }
+
+  .student-lifecycle-stepper {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 /* ---- Phone ---- */
@@ -1646,6 +1654,11 @@ button:disabled {
     padding: 0.75rem;
   }
 
+  .student-lifecycle-stepper {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.35rem;
+  }
+
   .lifecycle-step {
     font-size: 0.7rem;
   }
@@ -1664,6 +1677,11 @@ button:disabled {
   .lifecycle-stepper {
     grid-template-columns: repeat(2, 1fr);
     gap: 0.4rem;
+  }
+
+  .student-lifecycle-stepper {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.25rem;
   }
 
   .reference-headline {

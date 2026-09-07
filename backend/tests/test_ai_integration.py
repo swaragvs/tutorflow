@@ -146,9 +146,20 @@ class TestGenerateSessionPlan:
             notes="Covered function definition, calling functions with arguments, and return values. Student demonstrated understanding with examples.",
             homework="Write 3 functions: factorial, palindrome checker, fibonacci",
         )
+        previous_session = SessionModel(
+            id="previous-session-id",
+            tutor_id="tutor-id",
+            student_id="student-id",
+            start_time=datetime.utcnow() - timedelta(days=1, hours=1),
+            end_time=datetime.utcnow() - timedelta(days=1),
+            status=SessionStatusEnum.AI_REVIEWED,
+            notes="Previously practiced list comprehensions",
+            homework="Rewrite a loop using a list comprehension",
+            ai_summary='{"summary":"The student is ready for function composition."}',
+        )
         
         # Generate summary
-        result = generate_session_summary(student_profile, session)
+        result = generate_session_summary(student_profile, session, previous_session)
         
         # Verify result is grounded in actual notes
         assert "functions" in result["summary"].lower()
@@ -159,6 +170,8 @@ class TestGenerateSessionPlan:
         prompt = call_args[1]["contents"]
         assert "function definition" in prompt
         assert "return values" in prompt
+        assert "Previously practiced list comprehensions" in prompt
+        assert "Rewrite a loop using a list comprehension" in prompt
 
     @patch("app.services.ai.genai.Client")
     def test_generate_plan_handles_json_wrapped_response(self, mock_client_class):

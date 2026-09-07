@@ -44,6 +44,25 @@ class SessionResponse(BaseModel):
         from_attributes = True
 
 
+class StudentSessionResponse(BaseModel):
+    """Session fields students may read; AI tutor artifacts stay private."""
+    id: UUID
+    tutor_id: UUID
+    student_id: UUID
+    tutor_name: Optional[str] = None
+    student_name: Optional[str] = None
+    start_time: datetime
+    end_time: datetime
+    status: str
+    notes: Optional[str]
+    homework: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class SessionConflictResponse(BaseModel):
     """Response when session creation conflicts with existing session."""
     detail: str

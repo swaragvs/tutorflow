@@ -66,6 +66,47 @@ class TestSessionCreation:
         assert data["tutor_id"] == str(tutor.id)
         assert data["status"] == "SCHEDULED"
 
+    def test_student_session_detail_omits_ai_artifacts(self, client, db):
+        """Students can read session work but not tutor-only AI artifacts."""
+        tutor = User(
+            email="ai-scope-tutor@example.com",
+            password_hash=hash_password("TutorPass123"),
+            role=RoleEnum.TUTOR,
+        )
+        student = User(
+            email="ai-scope-student@example.com",
+            password_hash=hash_password("StudentPass123"),
+            role=RoleEnum.STUDENT,
+        )
+        db.add_all([tutor, student])
+        db.commit()
+        db.add(StudentProfile(user_id=student.id, tutor_id=tutor.id))
+        session = SessionModel(
+            tutor_id=tutor.id,
+            student_id=student.id,
+            start_time=datetime.utcnow(),
+            end_time=datetime.utcnow() + timedelta(hours=1),
+            notes="Review functions",
+            homework="Practice parameters",
+            ai_plan='{"warm_up":"Review"}',
+            ai_summary='{"summary":"Good progress"}',
+        )
+        db.add(session)
+        db.commit()
+
+        token = create_access_token(data={"sub": str(student.id), "role": student.role.value})
+        response = client.get(
+            f"/sessions/{session.id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["notes"] == "Review functions"
+        assert data["homework"] == "Practice parameters"
+        assert "ai_plan" not in data
+        assert "ai_summary" not in data
+
     def test_create_session_invalid_time_range(self, client, db):
         """Test session creation fails if end_time <= start_time."""
         # Create tutor and student

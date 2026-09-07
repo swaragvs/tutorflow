@@ -59,7 +59,9 @@ test("AI plan and review are visible to tutors and students", async ({ page, req
   await page.getByRole("button", { name: "Login" }).click();
   await expect(page).toHaveURL(/student\/dashboard/);
   await page.goto(`/student/sessions/${session.id}`);
-  await expect(page.getByRole("heading", { name: "AI Plan" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "AI Summary" })).toBeVisible();
-  await expect(page.locator("body")).toContainText(summary.summary);
+  await expect(page.getByLabel("Notes")).toHaveValue("Worked through the practice exercise.");
+  await expect(page.getByLabel("Homework")).toHaveValue("Repeat the exercise once.");
+  await expect(page.getByRole("heading", { name: "AI Plan" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "AI Summary" })).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText(summary.summary);
 });

@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
 from app.db.session import get_db
@@ -19,6 +20,7 @@ from app.schemas.session import (
     SessionCompleteRequest,
     SessionNotesRequest,
     SessionAIPlanRequest,
+    StudentSessionResponse,
 )
 from app.services.session_state import (
     transition_session,
@@ -142,7 +144,16 @@ async def create_session(
         end_time=request.end_time,
     )
     db.add(session)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if "sessions_no_tutor_time_overlap" in str(exc.orig):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Session conflicts with an existing booking for this tutor",
+            ) from exc
+        raise
     db.refresh(session)
     
     return session
@@ -181,7 +192,7 @@ async def list_sessions(
     return sessions
 
 
-@router.get("/{session_id}", response_model=SessionResponse)
+@router.get("/{session_id}", response_model=None)
 async def get_session(
     session_id: UUID,
     current_user: CurrentUser = Depends(get_current_user),
@@ -224,7 +235,9 @@ async def get_session(
                 detail="Session not found",
             )
     
-    return session
+    if current_user.role == RoleEnum.STUDENT:
+        return StudentSessionResponse.model_validate(session)
+    return SessionResponse.model_validate(session)
 
 
 @router.patch("/{session_id}/start", response_model=SessionResponse)
@@ -294,7 +307,16 @@ async def start_session(
             detail=f"Cannot transition from {e.current_status} to IN_PROGRESS via start",
         )
     
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if "sessions_no_tutor_time_overlap" in str(exc.orig):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Session conflicts with an existing booking for this tutor",
+            ) from exc
+        raise
     db.refresh(session)
     
     return session
@@ -342,7 +364,16 @@ async def reschedule_session(
 
     session.start_time = request.start_time
     session.end_time = request.end_time
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if "sessions_no_tutor_time_overlap" in str(exc.orig):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Session conflicts with an existing booking for this tutor",
+            ) from exc
+        raise
     db.refresh(session)
     return session
 
@@ -568,10 +599,21 @@ async def trigger_ai_review(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Student profile not found",
         )
+
+    previous_session = (
+        db.query(SessionModel)
+        .filter(
+            SessionModel.student_id == session.student_id,
+            SessionModel.id != session.id,
+            SessionModel.status.in_([SessionStatusEnum.COMPLETED, SessionStatusEnum.AI_REVIEWED]),
+        )
+        .order_by(SessionModel.end_time.desc())
+        .first()
+    )
     
     # Call AI service to generate summary
     try:
-        summary_result = generate_session_summary(student_profile, session)
+        summary_result = generate_session_summary(student_profile, session, previous_session)
         # Store as JSON string
         session.ai_summary = json.dumps(summary_result)
     except (AIServiceRateLimitError, AIServiceTimeoutError) as e:

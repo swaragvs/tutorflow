@@ -2,20 +2,22 @@
 
 A small full-stack app for 1:1 online tutors: role-based tutor/student accounts, a
 strictly server-enforced session lifecycle (`Scheduled` → `In Progress` → `Completed` →
-`AI Reviewed`), and AI-generated session plans/summaries grounded in each student's real
-profile and history.
+`AI Reviewed`), and tutor-facing AI session plans and summaries grounded in each student's
+stored profile and session context.
 
 TutorFlow is a focused workspace for 1:1 tutors to schedule sessions, record notes and
 homework, and review AI-generated preparation and summaries. Tutors manage the lifecycle;
-students can see their own sessions and read the resulting learning record.
+students can see only their own upcoming sessions, past notes, and homework.
 
 ## Stack
 
 - **Backend:** FastAPI + SQLAlchemy + Alembic, PostgreSQL
 - **Frontend:** React + TypeScript + Vite
-- **AI:** Gemini 2.5 Flash-Lite (Google AI Studio, free tier)
+- **AI:** Gemini via Google AI Studio (`GEMINI_MODEL` defaults to `gemini-3.5-flash-lite`)
 - **Auth:** JWT, bcrypt-hashed passwords
 - **Hosting:** Render backend, Vercel frontend, Supabase PostgreSQL
+- **External services:** Google AI Studio/Gemini and Supabase PostgreSQL are intended to use
+  their free tiers; account plan and quota status must be confirmed in their dashboards.
 
 ## Repo layout
 
@@ -46,11 +48,11 @@ npm run dev
 
 ## Live URL, GitHub, and demo credentials
 
-- **Frontend:** _add the Vercel URL after deployment_
-- **Backend:** _add the Render URL after deployment_
+- **Frontend:** https://tutorflow-vs.vercel.app
+- **Backend:** https://tutorflow-api-yax3.onrender.com
 - **GitHub:** https://github.com/swaragvs/tutorflow
-- **Tutor:** `demo.tutor@tutorflow.dev` / _add the seeded password_
-- **Student:** `demo.student@tutorflow.dev` / _add the seeded password_
+- **Tutor:** `demo.tutor@tutorflow.dev` / `TutorFlowDemo123!`
+- **Student:** `demo.student@tutorflow.dev` / `TutorFlowStudent123!`
 
 The first backend request may take up to a minute because the free-tier Render service
 sleeps after inactivity.
@@ -76,7 +78,7 @@ authorization and lifecycle rules on the server, and fits the free-tier deployme
 
   ```bash
   cd backend
-  python scripts/seed_demo.py --base-url https://your-render-service.onrender.com
+  python scripts/seed_demo.py --base-url https://tutorflow-api-yax3.onrender.com
   ```
 
   Set `DEMO_TUTOR_PASSWORD` and `DEMO_STUDENT_PASSWORD` in the shell before running it.
@@ -84,7 +86,65 @@ authorization and lifecycle rules on the server, and fits the free-tier deployme
   upcoming scheduled session, then prints the credentials and session IDs.
 
 7. Cold-load the Vercel URL in an incognito window and verify tutor login, logout, student
-  login, ownership filtering, AI-reviewed content, and the upcoming session.
+  login, ownership filtering, tutor-side AI-reviewed content, and the upcoming session.
+
+## Implementation status and remaining checks
+
+Implemented in the repository:
+
+- Tutors create and link student accounts through `POST /students`; students do not self-register.
+- JWT authentication, bcrypt password hashing, role checks, ownership filtering, and the
+  four-state session lifecycle are enforced by the backend.
+- The overlap check uses an application-level query for a clear conflict message and a
+  PostgreSQL exclusion constraint for the same tutor's time ranges, with the
+  `(tutor_id, start_time)` index supporting lookup.
+- AI plans and summaries use the student profile, the current session record, and the most
+  recent prior completed/reviewed session's notes, homework, and AI summary when one exists.
+  AI fields are returned to tutors, not students.
+- The deployment configuration, live URLs, and demo credentials are recorded above. The
+  latest local access-scope changes still require a Git push and fresh Render/Vercel deploy
+  before they are present in production.
+
+Remaining or intentionally not guaranteed:
+
+- The PostgreSQL exclusion constraint closes the same-tutor concurrent overlap race for the
+  deployed PostgreSQL database. The application-level fallback remains the behavior used by
+  SQLite-based tests.
+- The repository cannot prove the billing tier or remaining quota of external accounts. Confirm
+  Supabase's free-plan status and Google AI Studio quota in their dashboards before submission.
+  Render's free-tier cold-start behavior is documented below.
+- The API stores naive database datetimes and the frontend interprets naive API timestamps as
+  UTC for display; an explicit timezone-aware database column/serialization remains a future
+  hardening improvement.
+- After the latest changes are deployed, rerun the production smoke test and verify both demo
+  logins and the tutor/student AI-field boundary against the live URLs.
+
+## Requirements alignment
+
+Implemented:
+
+- Two roles are implemented: tutors create student accounts, schedule sessions, record notes,
+  and manage the lifecycle; students can access only their own upcoming sessions, past notes,
+  and homework.
+- The lifecycle is `SCHEDULED -> IN_PROGRESS -> COMPLETED -> AI_REVIEWED`. The backend stores
+  it as an enum and enforces transitions through the central
+  `backend/app/services/session_state.py` service, rather than relying on hidden UI buttons.
+- Completed sessions are locked for normal edits. The explicit AI-review transition remains
+  available to the tutor.
+- Tutor and student demo credentials, the GitHub repository, and deployed frontend/backend
+  URLs are listed above.
+
+Not fully guaranteed or still requiring confirmation:
+
+- Same-tutor double booking is rejected by an application-level overlap query and protected in
+  PostgreSQL by an exclusion constraint on the tutor and session time range. The migration
+  requires the `btree_gist` extension and must be applied before relying on the database guard.
+- The plan and summary prompts use the student profile, current session data, and the most
+  recent prior completed/reviewed session context when one exists.
+- The latest local access-scope changes are not yet represented in production until they are
+  pushed and both services redeploy. Production smoke verification must be repeated afterward.
+- The repository identifies Google AI Studio and Supabase as the external AI/database
+  services, but it cannot verify their free-tier billing status or remaining quota.
 
 ## Authentication & Authorization
 
@@ -112,7 +172,8 @@ TutorFlow uses **JWT-based authentication** with role-based access control (RBAC
 
 4. **Role-based Access**: 
    - **TUTOR** endpoints: Create students, schedule sessions, manage session state, trigger AI reviews
-   - **STUDENT** endpoints: View own sessions and profile, update session notes (while in progress)
+  - **STUDENT** access: View only their own sessions, notes, and homework; AI plan and summary
+    fields are omitted from student session-detail responses
    - No student can access another student's data, even by guessing session IDs—all queries are filtered by JWT claims server-side, never by client-supplied parameters
 
 ### Endpoints
@@ -122,6 +183,10 @@ TutorFlow uses **JWT-based authentication** with role-based access control (RBAC
 | POST | `/auth/register-tutor` | ❌ | Register a new tutor account |
 | POST | `/auth/login` | ❌ | Log in and receive JWT token |
 | GET | `/auth/me` | ✅ | Get current user info (id, email, role) |
+| POST | `/students` | Tutor | Create and link a student account |
+| GET | `/students` | Tutor | List the tutor's linked students |
+| GET | `/students/{id}` | Tutor | Retrieve an owned student profile |
+| PATCH | `/students/{id}` | Tutor | Update an owned student's profile |
 
 ### Example usage
 
@@ -156,9 +221,9 @@ SCHEDULED → IN_PROGRESS → COMPLETED → AI_REVIEWED
 | State | Tutor Can | Student Can | Transitions To | Notes |
 |-------|-----------|-------------|---|---------|
 | **SCHEDULED** | Start session | View only | IN_PROGRESS | Session is booked but not started |
-| **IN_PROGRESS** | Complete session, update notes | Update notes | COMPLETED | Session is actively happening |
+| **IN_PROGRESS** | Complete session, update notes | View notes/homework | COMPLETED | Session is actively happening |
 | **COMPLETED** | Trigger AI review | View only | AI_REVIEWED | Session finished, tutor added notes/homework |
-| **AI_REVIEWED** | View summary | View summary | ❌ (read-only) | AI summary generated, session archived |
+| **AI_REVIEWED** | View plan and summary | View notes and homework | ❌ (read-only) | AI artifacts remain tutor-only; the session is archived |
 
 ### Endpoints
 
@@ -175,7 +240,8 @@ SCHEDULED → IN_PROGRESS → COMPLETED → AI_REVIEWED
 
 ## AI Integration
 
-TutorFlow uses **Gemini 2.5 Flash-Lite** to generate context-aware session plans and summaries grounded in real student data.
+TutorFlow uses the configured Gemini model (default: `gemini-3.5-flash-lite`) to generate
+context-aware tutor-facing session plans and summaries grounded in real student data.
 
 ### AI Functions
 
@@ -243,10 +309,14 @@ Return JSON only, no prose outside the JSON object.
 **Authorization**: Tutor only  
 **Valid state**: COMPLETED only
 
-Generates a structured summary for the student's record based on:
+Generates a structured summary for the tutor's session record based on:
 - Session notes written by tutor
 - Homework assigned
 - Student's profile
+- Most recent prior session notes, homework, and AI summary when available
+
+AI plans and summaries are tutor-only artifacts. Student session responses omit these
+fields; students receive their own session status, notes, and homework instead.
 
 **Example request**:
 ```json
@@ -278,6 +348,11 @@ Generates a structured summary for the student's record based on:
 You are summarizing a completed 1:1 tutoring session for the student's ongoing record.
 
 Student: {student_profile.user_id}, level: {student_profile.skill_level or "(not specified)"}, goals: {student_profile.learning_goals or "(not specified)"}
+Most recent prior session (if any):
+- Notes: {previous_notes}
+- Homework assigned: {previous_homework}
+- AI summary of that session: {previous_ai_summary}
+
 This session's tutor notes: {session.notes or "(no notes recorded)"}
 Homework assigned: {session.homework or "(no homework assigned)"}
 
@@ -337,8 +412,9 @@ when a tutor schedules or reschedules a session, keeping that check efficient as
 
 ## Known limitations
 
-- The overlap check has a theoretical race-condition window between checking and inserting;
-  database-level locking was outside this project's scope.
+- The overlap check is an application-level query before insert and has a theoretical
+  race-condition window between checking and inserting; PostgreSQL deployments use the
+  `sessions_no_tutor_time_overlap` exclusion constraint from migration `0003` to close it.
 - The free-tier Render backend may sleep after inactivity; the first load may take up to a
   minute while the service wakes.
 - There is no admin role, live video/audio, or chat. These were deliberately scoped out.

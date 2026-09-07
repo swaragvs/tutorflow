@@ -13,7 +13,7 @@ import { BottomPanel } from "./layout/BottomPanel";
 import { SideNav } from "./layout/SideNav";
 import { StatusBar } from "./layout/StatusBar";
 import { TopBar } from "./layout/TopBar";
-import { StatusBadge } from "./components/StatusBadge";
+import { getStudentVisibleStatus, StatusBadge } from "./components/StatusBadge";
 import { type Role, type Session, type Student } from "./components/SessionCard";
 import { SessionList } from "./components/SessionList";
 import { formatSessionTime, parseSessionDate } from "./utils/formatSessionTime";
@@ -131,6 +131,23 @@ function LifecycleStepper({ status }: { status: SessionStatus }) {
   return (
     <div className="lifecycle-stepper" aria-label={`Session lifecycle: ${status}`}>
       {lifecycleStatuses.map((step, index) => (
+        <div key={step} className={`lifecycle-step ${index < currentIndex ? "done" : ""} ${index === currentIndex ? "current" : ""}`}>
+          <span className="lifecycle-dot">{index <= currentIndex ? "✓" : index + 1}</span>
+          <StatusBadge status={step} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const studentLifecycleStatuses: Exclude<SessionStatus, "AI_REVIEWED">[] = ["SCHEDULED", "IN_PROGRESS", "COMPLETED"];
+
+function StudentLifecycleStepper({ status }: { status: SessionStatus }) {
+  const visibleStatus = getStudentVisibleStatus(status);
+  const currentIndex = studentLifecycleStatuses.indexOf(visibleStatus);
+  return (
+    <div className="lifecycle-stepper student-lifecycle-stepper" aria-label={`Student session lifecycle: ${visibleStatus}`}>
+      {studentLifecycleStatuses.map((step, index) => (
         <div key={step} className={`lifecycle-step ${index < currentIndex ? "done" : ""} ${index === currentIndex ? "current" : ""}`}>
           <span className="lifecycle-dot">{index < currentIndex ? "✓" : index + 1}</span>
           <StatusBadge status={step} />
@@ -775,8 +792,6 @@ function StudentSessionDetailPage() {
     );
   }
 
-  const aiSummary = parseJsonField(session.ai_summary);
-
   return (
     <AppLayout
       title={getSessionPersonLabel(session, "STUDENT")}
@@ -795,18 +810,14 @@ function StudentSessionDetailPage() {
               <textarea value={session.homework ?? ""} readOnly rows={4} />
             </label>
           </div>
-          <div>
-            {session.ai_plan ? renderAiContent("AI Plan", session.ai_plan, ["warm_up", "main_focus", "practice_activities", "check_for_understanding"]) : null}
-            {session.ai_summary && aiSummary ? renderAiContent("AI Summary", session.ai_summary, ["summary", "strengths", "areas_to_improve", "recommended_next_topic"]) : null}
-          </div>
         </div>
       }
     >
       <div className="session-meta">
-        <StatusBadge status={session.status} />
+        <StatusBadge status={getStudentVisibleStatus(session.status)} />
         <span><span className="sr-only">Time:</span><strong>Session time:</strong> {formatSessionTime(session.start_time, session.end_time, session.status)}</span>
       </div>
-      <LifecycleStepper status={session.status} />
+      <StudentLifecycleStepper status={session.status} />
 
       {!session.notes && !session.homework && session.status !== "AI_REVIEWED" ? (
         <p className="panel-empty">No notes or homework are available for this session yet. Open the bottom panel to review the session workspace.</p>

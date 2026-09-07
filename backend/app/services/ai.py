@@ -152,6 +152,7 @@ Return JSON only, no prose outside the JSON object."""
 def generate_session_summary(
     student_profile: StudentProfile,
     session: Session,
+    previous_session: Optional[Session] = None,
 ) -> dict:
     """
     Generate a session summary using Gemini.
@@ -169,10 +170,21 @@ def generate_session_summary(
     Raises:
         AIServiceError: On Gemini API failures
     """
+    if previous_session:
+        prior_context = f"""Most recent prior session (if any):
+- Notes: {previous_session.notes or "(no notes recorded)"}
+- Homework assigned: {previous_session.homework or "(no homework assigned)"}
+- AI summary of that session: {previous_session.ai_summary or "(no AI summary available)"}"""
+    else:
+        prior_context = """Most recent prior session (if any):
+There is no prior session record for this student."""
+
     # Build the prompt
     prompt = f"""You are summarizing a completed 1:1 tutoring session for the student's ongoing record.
 
 Student: {student_profile.user_id}, level: {student_profile.skill_level or "(not specified)"}, goals: {student_profile.learning_goals or "(not specified)"}
+{prior_context}
+
 This session's tutor notes: {session.notes or "(no notes recorded)"}
 Homework assigned: {session.homework or "(no homework assigned)"}
 
