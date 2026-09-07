@@ -131,6 +131,8 @@ Implemented:
   `backend/app/services/session_state.py` service, rather than relying on hidden UI buttons.
 - Completed sessions are locked for normal edits. The explicit AI-review transition remains
   available to the tutor.
+- AI plans and summaries are tutor-only. Student session responses contain status, time, notes,
+  and homework, but omit `ai_plan` and `ai_summary`.
 - Tutor and student demo credentials, the GitHub repository, and deployed frontend/backend
   URLs are listed above.
 
@@ -237,6 +239,10 @@ SCHEDULED → IN_PROGRESS → COMPLETED → AI_REVIEWED
 | PATCH | `/sessions/{id}/notes` | Tutor | Update notes while IN_PROGRESS |
 | POST | `/sessions/{id}/ai-plan` | Tutor | Generate AI plan for SCHEDULED session |
 | PATCH | `/sessions/{id}/trigger-ai-review` | Tutor | Call AI service, generate summary, transition COMPLETED → AI_REVIEWED |
+
+`GET /sessions/{id}` is role-scoped: tutors receive the full session response, including
+`ai_plan` and `ai_summary`; students receive only their own session status, time, notes,
+and homework. Student responses deliberately omit both AI fields.
 
 ## AI Integration
 
