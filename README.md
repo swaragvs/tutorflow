@@ -102,8 +102,8 @@ Implemented in the repository:
   recent prior completed/reviewed session's notes, homework, and AI summary when one exists.
   AI fields are returned to tutors, not students.
 - The deployment configuration, live URLs, and demo credentials are recorded above. The
-  latest local access-scope changes still require a Git push and fresh Render/Vercel deploy
-  before they are present in production.
+  latest access-scope, AI-history, and overlap-constraint changes have been pushed and
+  redeployed.
 
 Remaining or intentionally not guaranteed:
 
@@ -116,8 +116,8 @@ Remaining or intentionally not guaranteed:
 - The API stores naive database datetimes and the frontend interprets naive API timestamps as
   UTC for display; an explicit timezone-aware database column/serialization remains a future
   hardening improvement.
-- After the latest changes are deployed, rerun the production smoke test and verify both demo
-  logins and the tutor/student AI-field boundary against the live URLs.
+- Production smoke verification has passed for both demo logins, tutor AI fields, and the
+  student AI-field boundary.
 
 ## Requirements alignment
 
@@ -141,8 +141,8 @@ Not fully guaranteed or still requiring confirmation:
   requires the `btree_gist` extension and must be applied before relying on the database guard.
 - The plan and summary prompts use the student profile, current session data, and the most
   recent prior completed/reviewed session context when one exists.
-- The latest local access-scope changes are not yet represented in production until they are
-  pushed and both services redeploy. Production smoke verification must be repeated afterward.
+- The latest access-scope changes are deployed to both services and were verified through the
+  production tutor/student smoke flow.
 - The repository identifies Google AI Studio and Supabase as the external AI/database
   services, but it cannot verify their free-tier billing status or remaining quota.
 
@@ -412,9 +412,9 @@ when a tutor schedules or reschedules a session, keeping that check efficient as
 
 ## Known limitations
 
-- The overlap check is an application-level query before insert and has a theoretical
-  race-condition window between checking and inserting; PostgreSQL deployments use the
-  `sessions_no_tutor_time_overlap` exclusion constraint from migration `0003` to close it.
+- The overlap check uses an application-level query for a clear error and the
+  `sessions_no_tutor_time_overlap` PostgreSQL exclusion constraint from migration `0003` for
+  concurrent safety. SQLite-based tests use the application-level fallback.
 - The free-tier Render backend may sleep after inactivity; the first load may take up to a
   minute while the service wakes.
 - There is no admin role, live video/audio, or chat. These were deliberately scoped out.
